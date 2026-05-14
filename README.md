@@ -6,7 +6,7 @@
 
 ## 📖 交互式学习站
 
-> **[在线阅读 →](https://weishuz.github.io/infra-learning-path/)**（GitHub Pages 启用后生效）
+> **[在线阅读 →](http://weishuz.com/infra-learning-path/)**（GitHub Pages 部署，等待首次 build 完成约 1-2 分钟）
 
 把本仓库的两份大纲重写成了一份问题驱动、可交互的教程站，结构：
 
