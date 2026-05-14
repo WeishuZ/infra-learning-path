@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>10 篇论文导读 — Infra Learning Path</title>
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+
+<button class="menu-btn" aria-label="菜单">☰ 目录</button>
+
+<div class="layout">
+
+<aside class="sidebar">
+  <a href="../index.html" class="brand"><span class="dot"></span>Infra Learning Path</a>
+  <div class="tagline">用 vLLM 学 AI infra · just-in-time · 问题驱动</div>
+  <div class="nav-group"><div class="nav-label">起步</div><nav><ul>
+    <li><a href="../index.html"><span class="idx">/</span>主页 · 概览</a></li>
+    <li><a href="00-mental-model.html"><span class="idx">00</span>心智模型</a></li>
+    <li><a href="01-setup.html"><span class="idx">01</span>Week 0 · 环境</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">6 个月主线</div><nav><ul>
+    <li><a href="02-entrypoints.html"><span class="idx">M1</span>入口与生命周期</a></li>
+    <li><a href="03-memory.html"><span class="idx">M2</span>内存 · PagedAttention</a></li>
+    <li><a href="04-scheduler.html"><span class="idx">M3</span>调度器</a></li>
+    <li><a href="05-kernels.html"><span class="idx">M4</span>Kernel &amp; 性能</a></li>
+    <li><a href="06-mini-vllm.html"><span class="idx">M5</span>原创 mini-vLLM</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">参考</div><nav><ul>
+    <li><a href="07-papers.html"><span class="idx">P</span>10 篇论文导读</a></li>
+    <li><a href="08-os-bridge.html"><span class="idx">OS</span>OS ↔ vLLM 速查</a></li>
+  </ul></nav></div>
+  <div class="foot">源仓库 <a href="https://github.com/WeishuZ/infra-learning-path" target="_blank" rel="noopener">WeishuZ/infra-learning-path</a></div>
+</aside>
+
+<main class="content">
+
+<div class="crumbs">
+  <a href="../index.html">home</a><span class="sep">/</span>tutorial<span class="sep">/</span>10 篇论文
+</div>
+
+<h1 class="page-title">10 篇论文 · 按读的顺序</h1>
+<p class="page-sub">每篇 1-2 小时。读法：找出"问题—方法—代码对应"三段。</p>
+
+<p class="lede">
+  AI infra 这条线，<strong>读完下面 10 篇 ≈ 拿到 80% 的工程语言</strong>。
+  剩下 20% 是新出的论文，能用这 10 篇当 framework 去快速吸收。
+  顺序经过设计：每一篇都引出下一篇要回答的新问题。
+</p>
+
+<div class="callout tip">
+  <div class="label">💡 怎么读论文</div>
+  <strong>不要</strong>从摘要读到引用。AI infra 论文几乎统一是这个结构：
+  <ol>
+    <li>Intro 最后一段 → 拿走 contribution 列表（看作者觉得自己解了啥）</li>
+    <li>Motivation / Background 一节 → 拿走"现状什么不好"</li>
+    <li>Design 主体 → 找<strong>第一张系统图</strong>，看懂它</li>
+    <li>Evaluation 第一张图 → 拿走"性能提升幅度"</li>
+    <li>Related work → <strong>跳过</strong>，等你自己做研究时再回看</li>
+  </ol>
+  全程不超过 90 分钟。写 200 字三段笔记：问题 / 方法 / 跟 vLLM 哪行代码对应。
+</div>
+
+<h2><span class="num">01</span>必读 7 篇 · 按月对齐</h2>
+
+<h3>① PagedAttention (vLLM) · SOSP 2023 <span class="tag red">M2</span></h3>
+
+<p><strong>Kwon et al.</strong> · "Efficient Memory Management for Large Language Model Serving with PagedAttention"<br>
+<a href="https://arxiv.org/abs/2309.06180" target="_blank">arxiv.org/abs/2309.06180</a></p>
+
+<ul>
+  <li><strong>问题</strong>：朴素 KV cache 内/外碎片 + 无法共享，显存利用率 ~40%。</li>
+  <li><strong>方法</strong>：固定 block + block table，OS 虚拟内存的 GPU 重写。</li>
+  <li><strong>看完读</strong>：<code>vllm/v1/core/kv_cache_manager.py</code> + <code>csrc/attention/paged_attention_v1.cu</code>。</li>
+  <li><strong>追问</strong>：block size 为什么是 16？(论文 §6.4 有讨论)</li>
+</ul>
+
+<h3>② Orca · OSDI 2022 <span class="tag red">M3</span></h3>
+
+<p><strong>Yu et al.</strong> · "Orca: A Distributed Serving System for Transformer-Based Generative Models"<br>
+论文官方 PDF 在 USENIX。</p>
+
+<ul>
+  <li><strong>问题</strong>：传统 batching 等齐再跑，长短不齐时浪费严重。</li>
+  <li><strong>方法</strong>：iteration-level scheduling — 每个 token step 重组 batch。这是 continuous batching 的 OG paper。</li>
+  <li><strong>看完读</strong>：<code>vllm/v1/core/sched/scheduler.py</code> 的 <code>schedule()</code>。</li>
+  <li><strong>追问</strong>：Orca 的"selective batching"是什么？vLLM 怎么实现？</li>
+</ul>
+
+<h3>③ Sarathi-Serve · OSDI 2024 <span class="tag red">M3</span></h3>
+
+<p><strong>Agrawal et al.</strong> · "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve"<br>
+<a href="https://arxiv.org/abs/2403.02310" target="_blank">arxiv.org/abs/2403.02310</a></p>
+
+<ul>
+  <li><strong>问题</strong>：Continuous batching 里 prefill 跟 decode 混 batch 会拖慢 decode。</li>
+  <li><strong>方法</strong>：chunked prefill — 把大 prefill 切片、跟 decode 拼一起。</li>
+  <li><strong>看完读</strong>：vLLM scheduler 里 chunked_prefill 路径。</li>
+  <li><strong>追问</strong>：chunk size 跟 token budget 是什么关系？</li>
+</ul>
+
+<h3>④ SGLang (RadixAttention) · NeurIPS 2024 <span class="tag red">M2</span></h3>
+
+<p><strong>Zheng et al.</strong> · "SGLang: Efficient Execution of Structured Language Model Programs"<br>
+<a href="https://arxiv.org/abs/2312.07104" target="_blank">arxiv.org/abs/2312.07104</a></p>
+
+<ul>
+  <li><strong>问题</strong>：vLLM 的 prefix caching 只能命中"完整 block 前缀"，结构化场景（多分支、tree of thoughts）共享率低。</li>
+  <li><strong>方法</strong>：用 radix tree 做细粒度 KV 共享。</li>
+  <li><strong>对照</strong>：跟 vLLM prefix caching 比，何时更优？(树状结构对话、agent 多分支推理)</li>
+  <li><strong>追问</strong>：vLLM 能借鉴吗？社区有 PR 在做吗？</li>
+</ul>
+
+<h3>⑤ FlashAttention (v1) · NeurIPS 2022 <span class="tag red">M4</span></h3>
+
+<p><strong>Dao et al.</strong> · "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"<br>
+<a href="https://arxiv.org/abs/2205.14135" target="_blank">arxiv.org/abs/2205.14135</a></p>
+
+<ul>
+  <li><strong>问题</strong>：朴素 attention 把 N×N matrix 实例化到 HBM，memory-bound 严重。</li>
+  <li><strong>方法</strong>：tile 划分 + online softmax，attention matrix 不落 HBM。</li>
+  <li><strong>看完读</strong>：FlashAttention 仓库 csrc 的 forward kernel。</li>
+  <li><strong>追问</strong>：online softmax 是怎么数学等价的？(看附录 A)</li>
+  <li><strong>后续</strong>：v2 (优化 work partition)、v3 (Hopper 架构特定优化)，选读。</li>
+</ul>
+
+<h3>⑥ H2O · NeurIPS 2023 <span class="tag yellow">M2/M3 之间</span></h3>
+
+<p><strong>Zhang et al.</strong> · "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models"<br>
+<a href="https://arxiv.org/abs/2306.14048" target="_blank">arxiv.org/abs/2306.14048</a></p>
+
+<ul>
+  <li><strong>问题</strong>：长 context 下 KV cache 撑爆显存。</li>
+  <li><strong>方法</strong>：观察到只有少数 "heavy hitter" token 被 attention 频繁用到，其他可以 evict。</li>
+  <li><strong>OS 对照</strong>：working set theory + LRU 的现代版。</li>
+  <li><strong>追问</strong>：vLLM 当前 evict 策略是 H2O 风格吗？(答：不是，vLLM 简单 LRU。H2O 思想可能在未来 PR 出现)</li>
+</ul>
+
+<h3>⑦ S-LoRA · MLSys 2024 <span class="tag yellow">M5+</span></h3>
+
+<p><strong>Sheng et al.</strong> · "S-LoRA: Serving Thousands of Concurrent LoRA Adapters"<br>
+<a href="https://arxiv.org/abs/2311.03285" target="_blank">arxiv.org/abs/2311.03285</a></p>
+
+<ul>
+  <li><strong>问题</strong>：每个 user 一个 LoRA adapter（fine-tune 的小补丁），上千个怎么 serve？</li>
+  <li><strong>方法</strong>：unified memory pool + custom CUDA kernel，让多 adapter 共享 batch。</li>
+  <li><strong>OS 对照</strong>：多租户隔离 + 资源共享。</li>
+  <li><strong>看完读</strong>：<code>vllm/lora/</code>。</li>
+</ul>
+
+<h2><span class="num">02</span>选读 3 篇 · 看兴趣选支</h2>
+
+<h3>⑧ ZeRO · SC 2020 <span class="tag green">训练向</span></h3>
+
+<p><strong>Rajbhandari et al.</strong> · "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"</p>
+
+<ul>
+  <li>大模型训练的内存分片经典。</li>
+  <li>OS 思维浓——把 optimizer state、gradient、parameter 分片到多卡。</li>
+  <li><strong>推理岗</strong>面试也可能问，知道核心想法即可。</li>
+</ul>
+
+<h3>⑨ Megatron-LM (TP/PP) · 系列论文 <span class="tag green">训练向</span></h3>
+
+<ul>
+  <li>Tensor parallelism 把矩阵切片到多卡协同算。</li>
+  <li>Pipeline parallelism 把模型层切到多卡。</li>
+  <li>vLLM 的多卡推理也用这两套。<strong>知道概念</strong>，看 <code>vllm/distributed/</code>。</li>
+</ul>
+
+<h3>⑩ torch.compile / Inductor · ASPLOS 2024 <span class="tag blue">编译器向</span></h3>
+
+<p><strong>Ansel et al.</strong> · "PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation"</p>
+
+<ul>
+  <li>如果你想往编译器方向走，这是入口。</li>
+  <li>vLLM 在某些路径已经用 torch.compile。</li>
+  <li><strong>当成 Month 7+ 的桥梁论文读</strong>。</li>
+</ul>
+
+<h2><span class="num">03</span>论文笔记模板</h2>
+
+<p>每篇读完，在 <code>~/infra/papers/</code> 建一个 .md 文件，固定 3 段：</p>
+
+<pre><code># &lt;论文名&gt; · &lt;会议&gt;
+
+## 问题 (50 字)
+现状是什么；现状不好在哪。
+
+## 方法 (100 字)
+核心 idea 一句话；最关键的 mechanism (机制) 一段。
+
+## 对账 (50 字)
+跟 vLLM 哪行代码 / 哪个模块对得上？(找不到也写"找不到，待查")
+
+## 我学到了 (可选)
+反直觉点、巧妙工程、可以借用到 mini-vLLM 的地方。
+</code></pre>
+
+<div class="callout check">
+  <div class="label">✓ 论文阅读量</div>
+  6 个月走完，你应该有 ~15-20 篇论文笔记（7 篇必读 + 你自己 follow 的）。
+  这是 senior infra 工程师的"概念资本"。<strong>面试时随手能援引 = 真的懂</strong>。
+</div>
+
+<h2><span class="num">04</span>follow 谁的 Twitter / arxiv</h2>
+
+<ul>
+  <li><strong>Woosuk Kwon</strong> · vLLM 第一作者</li>
+  <li><strong>Tri Dao</strong> · FlashAttention 作者</li>
+  <li><strong>Lianmin Zheng</strong> · SGLang 作者</li>
+  <li><strong>Hao Zhang (UCSD)</strong> · 推理优化系列论文</li>
+  <li><strong>Amey Agrawal</strong> · Sarathi 作者</li>
+  <li>arXiv <code>cs.DC</code> + <code>cs.LG</code> 每周一刷</li>
+</ul>
+
+<div class="pagenav">
+  <a class="prev" href="06-mini-vllm.html"><div class="dir">prev</div><div class="ttl">M5 · mini-vLLM</div></a>
+  <a class="next" href="08-os-bridge.html"><div class="dir">next</div><div class="ttl">OS ↔ vLLM 速查</div></a>
+</div>
+
+</main>
+</div>
+
+<script src="../assets/app.js"></script>
+</body>
+</html>

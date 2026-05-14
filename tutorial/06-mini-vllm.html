@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M5 · 原创 mini-vLLM — Infra Learning Path</title>
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+
+<button class="menu-btn" aria-label="菜单">☰ 目录</button>
+
+<div class="layout">
+
+<aside class="sidebar">
+  <a href="../index.html" class="brand"><span class="dot"></span>Infra Learning Path</a>
+  <div class="tagline">用 vLLM 学 AI infra · just-in-time · 问题驱动</div>
+  <div class="nav-group"><div class="nav-label">起步</div><nav><ul>
+    <li><a href="../index.html"><span class="idx">/</span>主页 · 概览</a></li>
+    <li><a href="00-mental-model.html"><span class="idx">00</span>心智模型</a></li>
+    <li><a href="01-setup.html"><span class="idx">01</span>Week 0 · 环境</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">6 个月主线</div><nav><ul>
+    <li><a href="02-entrypoints.html"><span class="idx">M1</span>入口与生命周期</a></li>
+    <li><a href="03-memory.html"><span class="idx">M2</span>内存 · PagedAttention</a></li>
+    <li><a href="04-scheduler.html"><span class="idx">M3</span>调度器</a></li>
+    <li><a href="05-kernels.html"><span class="idx">M4</span>Kernel &amp; 性能</a></li>
+    <li><a href="06-mini-vllm.html"><span class="idx">M5</span>原创 mini-vLLM</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">参考</div><nav><ul>
+    <li><a href="07-papers.html"><span class="idx">P</span>10 篇论文导读</a></li>
+    <li><a href="08-os-bridge.html"><span class="idx">OS</span>OS ↔ vLLM 速查</a></li>
+  </ul></nav></div>
+  <div class="foot">源仓库 <a href="https://github.com/WeishuZ/infra-learning-path" target="_blank" rel="noopener">WeishuZ/infra-learning-path</a></div>
+</aside>
+
+<main class="content">
+
+<div class="crumbs">
+  <a href="../index.html">home</a><span class="sep">/</span>tutorial<span class="sep">/</span>M5 mini-vLLM
+</div>
+
+<h1 class="page-title">Month 5 · 原创项目 · mini-vLLM</h1>
+<p class="page-sub">从零写一个能 serve 一个请求的 paged-attention engine。这是简历最重的那张牌。</p>
+
+<p class="lede">
+  到目前为止，你都在<strong>读别人的代码</strong>。这个月反过来：
+  把 M2-M4 学到的东西<strong>用自己的代码重新发明一遍</strong>。
+  发明的过程会暴露所有你以为懂、其实没懂的地方。
+  这正是这一步的价值。
+</p>
+
+<div class="callout q">
+  <div class="label">驱动问题</div>
+  给你一台 A10、一个 7B Llama、PyTorch 和 FlashAttention 现成 kernel。
+  <strong>不允许 import vllm</strong>。你要在 2 周内 serve 一个 OpenAI 兼容请求。
+  从哪儿开始写第一行代码？
+</div>
+
+<details class="predict">
+  <summary>先想一想，再展开建议路径</summary>
+  <div class="body">
+    <p>反直觉答案：<strong>从最简单的 single-request loop 开始，先丑后美</strong>。</p>
+    <p>不要先写 block manager、不要先想 batching、不要先用 FastAPI。</p>
+    <p>第一周的目标只是："一个 hardcoded prompt 进去，几行 token id 出来"。
+    第二周才加 paged KV、batching、HTTP。</p>
+    <p>这就是 v0.1 → v0.5 的渐进路径。</p>
+  </div>
+</details>
+
+<h2><span class="num">01</span>项目范围 · 明确做什么和不做什么</h2>
+
+<div class="cards-2">
+  <div class="card">
+    <h3>✅ 做</h3>
+    <ul>
+      <li>单卡 fp16 推理 Llama 3.1 8B</li>
+      <li>自己的 block manager（固定 16 token block）</li>
+      <li>自己的 continuous batching scheduler（FCFS + recompute preempt）</li>
+      <li>OpenAI-compatible chat API (FastAPI)</li>
+      <li>SSE 流式输出</li>
+      <li>跟 vLLM 对照的 benchmark</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>❌ 不做（这版不要）</h3>
+    <ul>
+      <li>多 GPU TP/PP</li>
+      <li>量化（fp16 即可）</li>
+      <li>多 LoRA</li>
+      <li>自己写 attention CUDA kernel（用 FlashAttention 或 PyTorch）</li>
+      <li>编译器优化（torch.compile 可选）</li>
+      <li>支持多种模型架构（只 Llama）</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="num">02</span>架构 · 4 个核心模块</h2>
+
+<div class="diagram">
+  <svg viewBox="0 0 720 360" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+    <defs>
+      <marker id="ay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#78716c"/>
+      </marker>
+    </defs>
+    <g font-family="ui-sans-serif, system-ui" font-size="12">
+
+      <rect x="280" y="20" width="160" height="50" rx="6" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+      <text x="360" y="42" text-anchor="middle" font-weight="700">FastAPI server</text>
+      <text x="360" y="58" text-anchor="middle" fill="#78716c" font-size="10">~50 行</text>
+
+      <rect x="280" y="110" width="160" height="50" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="1.5"/>
+      <text x="360" y="132" text-anchor="middle" font-weight="700">Engine + Scheduler</text>
+      <text x="360" y="148" text-anchor="middle" fill="#78716c" font-size="10">~150 行</text>
+
+      <rect x="100" y="200" width="180" height="50" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+      <text x="190" y="222" text-anchor="middle" font-weight="700">BlockManager</text>
+      <text x="190" y="238" text-anchor="middle" fill="#78716c" font-size="10">~80 行</text>
+
+      <rect x="440" y="200" width="180" height="50" rx="6" fill="#fef3c7" stroke="#facc15" stroke-width="1.5"/>
+      <text x="530" y="222" text-anchor="middle" font-weight="700">ModelRunner</text>
+      <text x="530" y="238" text-anchor="middle" fill="#78716c" font-size="10">~150 行</text>
+
+      <rect x="280" y="290" width="160" height="50" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+      <text x="360" y="312" text-anchor="middle" font-weight="700">Llama (HF) + FlashAttn</text>
+      <text x="360" y="328" text-anchor="middle" fill="#78716c" font-size="10">外部依赖</text>
+
+      <g stroke="#78716c" stroke-width="1.5" fill="none">
+        <path d="M 360 70 L 360 110" marker-end="url(#ay)"/>
+        <path d="M 320 160 L 240 200" marker-end="url(#ay)"/>
+        <path d="M 400 160 L 480 200" marker-end="url(#ay)"/>
+        <path d="M 530 250 L 400 290" marker-end="url(#ay)"/>
+      </g>
+
+      <text x="640" y="225" fill="#16a34a" font-size="11" font-weight="600">M2 学的</text>
+      <text x="80" y="225" fill="#c2410c" font-size="11" font-weight="600">M3 学的</text>
+    </g>
+  </svg>
+  <div class="caption">总计 &lt; 500 行 Python 跑通最小可用。简洁是目的，不是约束。</div>
+</div>
+
+<h2><span class="num">03</span>每周里程碑</h2>
+
+<div class="timeline">
+  <div class="step">
+    <div class="badge">Week 1</div>
+    <div>
+      <div class="title">单请求跑通 (v0.1)</div>
+      <div class="desc">load model → tokenize hardcoded prompt → 朴素 KV cache (contiguous) → loop 一个 token 一个 token decode → 打印输出。<strong>不要 paged，不要 batching</strong>。证明你能让 7B 模型在你手上跑出文本。</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="badge">Week 1.5</div>
+    <div>
+      <div class="title">加 BlockManager (v0.2)</div>
+      <div class="desc">改成 block-based KV cache。block size 16。维护 block table。Attention 用 paged 版本（vLLM 已开源 paged kernel 可以用，或自己写 PyTorch gather 版）。<strong>仍是单请求</strong>。</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="badge">Week 2</div>
+    <div>
+      <div class="title">加 Scheduler (v0.3)</div>
+      <div class="desc">多请求 batching。FCFS + token budget + preempt。Engine 主循环每 step 调 schedule()。这是<strong>整个项目最难的一步</strong>。</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="badge">Week 2.5</div>
+    <div>
+      <div class="title">加 HTTP layer (v0.4)</div>
+      <div class="desc">FastAPI + SSE streaming + OpenAI 协议字段。能用 <code>openai-python</code> SDK 打你的 server。</div>
+    </div>
+  </div>
+  <div class="step">
+    <div class="badge">Week 3</div>
+    <div>
+      <div class="title">Benchmark + 写 README (v0.5)</div>
+      <div class="desc">跟 vLLM 同 model 同 workload 跑对比。差距应该在 2-5×（你慢）。<strong>分析差距来源</strong>写进 README——这部分才是简历加分项。</div>
+    </div>
+  </div>
+</div>
+
+<div class="callout warn">
+  <div class="label">⚠ 别在 v0.1 卡住</div>
+  Week 1 最容易卡的地方：
+  <ul>
+    <li>HF model 输出格式 vs 你以为的格式（特别是 logits shape）</li>
+    <li>fp16 精度差导致输出乱码（用 bf16 通常好一点）</li>
+    <li>没正确处理 KV cache 的增长（每 step append 一行）</li>
+  </ul>
+  卡住时：<strong>对照 vLLM 同位置的代码</strong>，不丢人。
+</div>
+
+<h2><span class="num">04</span>关键设计决策清单</h2>
+
+<p>开工前先回答下面这些问题，写在 design.md 里：</p>
+
+<ol>
+  <li><strong>block size 选多少？</strong> vLLM 选 16。你为啥选 16/8/32？(权衡：lookup overhead vs 碎片)</li>
+  <li><strong>KV cache 多大？</strong> 算式：<code>(显存 - 模型权重 - activation buffer) / (2 × layers × heads × head_dim × dtype_size × block_size)</code>。手算一遍。</li>
+  <li><strong>token budget 怎么定？</strong> 一步最多算多少 token？太大 batch step 慢，太小吞吐低。</li>
+  <li><strong>preempt 选 recompute 还是 swap？</strong> 第一版 recompute（更简单）。</li>
+  <li><strong>attention backend？</strong> FlashAttention v2 prefill + 自己 gather KV + PyTorch attention for decode（最简）；或都用 paged_attention kernel from vLLM。</li>
+  <li><strong>Sampling 怎么实现？</strong> 至少支持 temperature + top_p。直接 PyTorch 即可。</li>
+</ol>
+
+<h2><span class="num">05</span>"对账"练习</h2>
+
+<p>这是这个月最有价值的副产物：</p>
+
+<p>每写完一个模块，<strong>立刻打开 vLLM 同位置的代码</strong>对照：</p>
+
+<ul>
+  <li>vLLM 的 <code>BlockManager</code> 跟我的有什么不同？为什么它多了 X 字段？</li>
+  <li>vLLM 的 <code>schedule()</code> 比我的多 50% 代码量。多在哪些 case？</li>
+  <li>vLLM 在哪些地方做了我没意识到的优化？</li>
+</ul>
+
+<p>把这些对照写在 <code>NOTES.md</code> 里。<strong>这份对照笔记 = 你的 blog 草稿</strong>。</p>
+
+<h2><span class="num">06</span>Benchmark 期望</h2>
+
+<p>对照 vLLM 同 model 同负载，你应该看到：</p>
+
+<table>
+  <thead><tr><th>指标</th><th>你的 mini-vLLM</th><th>vLLM</th><th>差距来源</th></tr></thead>
+  <tbody>
+    <tr><td>单请求 throughput</td><td>~50-100 tok/s</td><td>~100-150 tok/s</td><td>没 CUDA graph / 没 fused kernel</td></tr>
+    <tr><td>32 并发 throughput</td><td>~500-1000 tok/s</td><td>~2000-3000 tok/s</td><td>Triton attention / 编译优化</td></tr>
+    <tr><td>TTFT (4K prompt)</td><td>~200-400 ms</td><td>~100-200 ms</td><td>FlashAttention v2 vs v3、kernel 选择</td></tr>
+    <tr><td>显存利用率</td><td>~85%</td><td>~92%</td><td>没 prefix caching、没 swap</td></tr>
+  </tbody>
+</table>
+
+<p><strong>差距是好事</strong>——讲清楚每个差距来源，比追平 vLLM 重要得多。
+"我做了 X 取了 Y 折中"是工程叙事，"我比 vLLM 慢"不是。</p>
+
+<h2><span class="num">07</span>仓库交付物 checklist</h2>
+
+<ul>
+  <li><code>README.md</code>：架构图 + 启动命令 + 限制列表 + benchmark 结果。</li>
+  <li><code>design.md</code>：上面 §04 的决策记录。</li>
+  <li><code>NOTES.md</code>：跟 vLLM 的对照笔记。</li>
+  <li><code>benchmarks/</code>：benchmark 脚本 + 数据 + 画图代码。</li>
+  <li><code>tests/</code>：至少覆盖 BlockManager 和 Scheduler 的关键路径。</li>
+  <li>一段 30 秒的 GIF / 视频：从启动到收到 streaming token。</li>
+</ul>
+
+<h2><span class="num">08</span>blog 第 2 篇 · "我从零写了一个 mini vLLM"</h2>
+
+<p>这是这个月的另一个产出。结构：</p>
+
+<ol>
+  <li>(钩子) 我花了 3 周写一个 500 行 Python 的 LLM serving engine，比 vLLM 慢 3 倍但学到了 10 倍。</li>
+  <li>(对照) vLLM 在内存 / 调度 / kernel 三层各做了什么，我相应做了什么。</li>
+  <li>(差距分析) 我的 3× 慢具体来自哪里——一一拆解。</li>
+  <li>(意外) 写的过程中发现自己 M2 漏掉的细节（举 2-3 个具体例子）。</li>
+  <li>(结论) "用到再学"在这个项目里的实际操作 + 你以为懂的代码，写一遍才知道哪里不懂。</li>
+</ol>
+
+<div class="callout tip">
+  <div class="label">💡 投递 timing</div>
+  这篇 blog 上线后立刻在 Twitter / r/LocalLLaMA / vLLM Slack 转。
+  reach 比你想的高——这类"我重新发明轮子"内容是 infra 圈最爱的格式。
+  你的下一个工作面试很可能就来自这篇。
+</div>
+
+<h2><span class="num">09</span>本页自检</h2>
+
+<div class="selfcheck">
+  <h4>Month 5 结束时这些应该全部 ✓</h4>
+  <ul>
+    <li><input type="checkbox" id="p1"/><label for="p1">mini-vllm 仓库公开，能跑通 <code>python -m mini_vllm serve</code>。</label></li>
+    <li><input type="checkbox" id="p2"/><label for="p2">README 有架构图、限制列表、benchmark 表。</label></li>
+    <li><input type="checkbox" id="p3"/><label for="p3">benchmark 跑过对照 vLLM，差距分析写了至少 3 个原因。</label></li>
+    <li><input type="checkbox" id="p4"/><label for="p4">写的过程中发现了 M2-M4 漏掉的至少 3 个细节，记在 NOTES.md。</label></li>
+    <li><input type="checkbox" id="p5"/><label for="p5">blog 第 2 篇已发布。</label></li>
+  </ul>
+</div>
+
+<div class="pagenav">
+  <a class="prev" href="05-kernels.html"><div class="dir">prev</div><div class="ttl">M4 · Kernel</div></a>
+  <a class="next" href="07-papers.html"><div class="dir">next</div><div class="ttl">10 篇论文导读</div></a>
+</div>
+
+</main>
+</div>
+
+<script src="../assets/app.js"></script>
+</body>
+</html>

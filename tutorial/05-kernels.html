@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M4 · Kernel &amp; 性能 — Infra Learning Path</title>
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+
+<button class="menu-btn" aria-label="菜单">☰ 目录</button>
+
+<div class="layout">
+
+<aside class="sidebar">
+  <a href="../index.html" class="brand"><span class="dot"></span>Infra Learning Path</a>
+  <div class="tagline">用 vLLM 学 AI infra · just-in-time · 问题驱动</div>
+  <div class="nav-group"><div class="nav-label">起步</div><nav><ul>
+    <li><a href="../index.html"><span class="idx">/</span>主页 · 概览</a></li>
+    <li><a href="00-mental-model.html"><span class="idx">00</span>心智模型</a></li>
+    <li><a href="01-setup.html"><span class="idx">01</span>Week 0 · 环境</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">6 个月主线</div><nav><ul>
+    <li><a href="02-entrypoints.html"><span class="idx">M1</span>入口与生命周期</a></li>
+    <li><a href="03-memory.html"><span class="idx">M2</span>内存 · PagedAttention</a></li>
+    <li><a href="04-scheduler.html"><span class="idx">M3</span>调度器</a></li>
+    <li><a href="05-kernels.html"><span class="idx">M4</span>Kernel &amp; 性能</a></li>
+    <li><a href="06-mini-vllm.html"><span class="idx">M5</span>原创 mini-vLLM</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">参考</div><nav><ul>
+    <li><a href="07-papers.html"><span class="idx">P</span>10 篇论文导读</a></li>
+    <li><a href="08-os-bridge.html"><span class="idx">OS</span>OS ↔ vLLM 速查</a></li>
+  </ul></nav></div>
+  <div class="foot">源仓库 <a href="https://github.com/WeishuZ/infra-learning-path" target="_blank" rel="noopener">WeishuZ/infra-learning-path</a></div>
+</aside>
+
+<main class="content">
+
+<div class="crumbs">
+  <a href="../index.html">home</a><span class="sep">/</span>tutorial<span class="sep">/</span>M4 Kernel
+</div>
+
+<h1 class="page-title">Month 4 · Kernel &amp; 性能</h1>
+<p class="page-sub">下到 CUDA 层。理解为什么 FlashAttention 这种"重写 attention"的东西能快 3 倍。</p>
+
+<p class="lede">
+  Month 1-3 一直在 Python 层。这个月下到 <code>csrc/</code> 和 Triton。
+  目标<strong>不是</strong>能徒手写 CUDA 算子，而是能读懂、能调试、能给已有 kernel 加 benchmark。
+  这一层最难补，但回报是面试时立刻显出底子。
+</p>
+
+<div class="callout q">
+  <div class="label">驱动问题</div>
+  Attention 的数学公式 <code>softmax(QK^T / sqrt(d))V</code> 谁都会写。
+  PyTorch 一行 <code>F.scaled_dot_product_attention</code> 就能跑。
+  那 FlashAttention 凭什么快 3 倍？它<strong>没改公式</strong>，到底改了什么？
+</div>
+
+<details class="predict">
+  <summary>先猜，再展开答案</summary>
+  <div class="body">
+    <p><strong>关键洞察：现代 GPU 的瓶颈不是算力，是显存带宽。</strong></p>
+    <p>朴素 attention 要把 N×N 的 attention matrix 实例化在 HBM（GPU 主显存）。
+    对 N=4096，这个矩阵 16M 个 float，一来一回搬 64MB 数据。
+    SM (compute unit) 大部分时间在<strong>等显存</strong>，不在算。</p>
+    <p>FlashAttention 的做法：</p>
+    <ol>
+      <li>把 Q、K、V 切成 tile，每次只把一对 tile 加载到 SRAM（GPU 内 L1 级缓存，几十 KB，巨快）。</li>
+      <li>在 SRAM 里算完这对 tile 的部分 attention，<strong>累加</strong>到输出。</li>
+      <li>用"online softmax"技巧让 tile-by-tile 计算等价于一次性算。</li>
+      <li>从头到尾 attention matrix 不实例化，只有最终 O 矩阵搬回 HBM。</li>
+    </ol>
+    <p>本质 = <strong>IO-aware</strong>，工艺级地少搬数据。算力没省，但显存搬运省了一个数量级。</p>
+  </div>
+</details>
+
+<h2><span class="num">01</span>GPU 内存层级 · 必知</h2>
+
+<p>这是最基础的硬件背景。看完这张图，FlashAttention 才能 click。</p>
+
+<div class="diagram">
+  <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+    <g font-family="ui-sans-serif, system-ui" font-size="12">
+      <!-- pyramid -->
+      <polygon points="350,30 280,90 420,90" fill="#fef2f2" stroke="#dc2626"/>
+      <text x="350" y="65" text-anchor="middle" font-weight="700" font-size="13">寄存器</text>
+      <text x="350" y="80" text-anchor="middle" fill="#78716c" font-size="10">每 thread 256 个</text>
+
+      <polygon points="280,90 220,150 480,150 420,90" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="350" y="125" text-anchor="middle" font-weight="700" font-size="13">SRAM (shared memory)</text>
+      <text x="350" y="140" text-anchor="middle" fill="#78716c" font-size="10">每 SM ~100KB · 19 TB/s</text>
+
+      <polygon points="220,150 160,210 540,210 480,150" fill="#fefce8" stroke="#ca8a04"/>
+      <text x="350" y="185" text-anchor="middle" font-weight="700" font-size="13">L2 cache</text>
+      <text x="350" y="200" text-anchor="middle" fill="#78716c" font-size="10">~40MB · 5 TB/s</text>
+
+      <polygon points="160,210 80,290 620,290 540,210" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="350" y="245" text-anchor="middle" font-weight="700" font-size="13">HBM (显存)</text>
+      <text x="350" y="262" text-anchor="middle" fill="#78716c" font-size="11">A100: 40-80GB · 2 TB/s</text>
+      <text x="350" y="278" text-anchor="middle" fill="#78716c" font-size="10">所有 PyTorch tensor 默认在这</text>
+
+      <polygon points="80,290 30,340 670,340 620,290" fill="#f5f5f4" stroke="#a8a29e"/>
+      <text x="350" y="320" text-anchor="middle" font-weight="700" font-size="13">Host RAM</text>
+      <text x="350" y="335" text-anchor="middle" fill="#78716c" font-size="10">PCIe 32 GB/s · vLLM swap-out 的去处</text>
+
+      <!-- labels right -->
+      <text x="640" y="55" fill="#dc2626" font-size="11">↑ 快</text>
+      <text x="640" y="320" fill="#3b82f6" font-size="11">↓ 大</text>
+    </g>
+  </svg>
+  <div class="caption">每往下一层，容量大 10×、带宽小 10×。把数据"留在上面" = 性能。</div>
+</div>
+
+<p>记住的数字：<strong>SRAM 比 HBM 快 10×</strong>。任何能减少 HBM 访问的优化，回报都是显著的。
+FlashAttention 是工程界 IO-aware 的代表作。</p>
+
+<h2><span class="num">02</span>FlashAttention 的核心 trick · online softmax</h2>
+
+<p>softmax 看起来不可分（需要先求总和再归一）：</p>
+
+<pre><code>softmax(x_i) = exp(x_i) / Σ exp(x_j)</code></pre>
+
+<p>看似要等所有 x_j 算完才能算分母。<strong>online softmax</strong> 的技巧：分块算时，每块结束维护一个 running max + running sum，下一块来了就<em>校正</em>之前的累加值。数学等价、可分块。</p>
+
+<div class="callout tip">
+  <div class="label">💡 不用从头推 online softmax</div>
+  FlashAttention 论文附录 A 有完整推导。<strong>你只需要知道"能等价做到"</strong>，不必背公式。
+  真要写算子时再深入。
+</div>
+
+<h2><span class="num">03</span>vLLM 用了哪些 kernel</h2>
+
+<p>vLLM 不写自己的所有 kernel。生态分工：</p>
+
+<table>
+  <thead><tr><th>组件</th><th>来源</th><th>位置</th></tr></thead>
+  <tbody>
+    <tr><td>朴素 attention (prefill)</td><td>FlashAttention v2/v3 (Dao-AILab)</td><td>外部依赖 <code>flash-attn</code></td></tr>
+    <tr><td>Paged attention (decode)</td><td>vLLM 自写</td><td><code>csrc/attention/paged_attention_*.cu</code></td></tr>
+    <tr><td>Triton attention</td><td>vLLM 自写 (跨架构)</td><td><code>vllm/attention/ops/</code> 或 <code>vllm/v1/attention/</code></td></tr>
+    <tr><td>RMSNorm / RoPE / activation</td><td>vLLM 自写小算子</td><td><code>csrc/layernorm_kernels.cu</code> 等</td></tr>
+    <tr><td>GEMM (大矩阵乘)</td><td>cuBLAS / cuBLASLt</td><td>NVIDIA 闭源</td></tr>
+    <tr><td>MoE expert kernel</td><td>vLLM + 社区</td><td><code>vllm/model_executor/layers/fused_moe/</code></td></tr>
+  </tbody>
+</table>
+
+<p><strong>"vLLM 自写"的最多的是 paged attention</strong>——因为它要支持非连续 KV 地址（block table 索引），这是其他 attention 库不直接支持的。</p>
+
+<h2><span class="num">04</span>读源码 · csrc/attention</h2>
+
+<p>这是本月最硬核的一段。<strong>看不懂不要怕</strong>，目标只是认出结构。</p>
+
+<div class="code-anchor">
+  <div class="label">读 ① · 1 小时 · 入口</div>
+  <div class="path"><a href="https://github.com/vllm-project/vllm/tree/main/csrc/attention" target="_blank">csrc/attention/</a></div>
+  目录扫一眼。注意有 <code>paged_attention_v1.cu</code> 和 <code>paged_attention_v2.cu</code>。v2 在 v1 基础上加了 partition (分片处理超长 sequence)。
+  <div class="ask">v2 比 v1 多解了什么问题？(答案在 source 顶部的 comment block)</div>
+</div>
+
+<div class="code-anchor">
+  <div class="label">读 ② · 2 小时 · 一个完整 kernel</div>
+  <div class="path"><code>csrc/attention/paged_attention_v1.cu</code> · <code>paged_attention_v1_kernel</code></div>
+  CUDA C++ 函数。注意几个东西：
+  <ul>
+    <li><code>__shared__</code> 修饰的变量 = SRAM 上的 buffer。</li>
+    <li>外层 for 循环遍历 KV block，里面 for 遍历 token in block。</li>
+    <li><code>block_table</code> 索引把逻辑 block → 物理 block 偏移。</li>
+    <li>online softmax 的 max 和 sum 累加变量。</li>
+  </ul>
+  <div class="ask">同一个 thread block 里的 thread 在<strong>协作做什么</strong>？(答：每个 thread 处理一个 head dim，最后归约出 attention 输出)</div>
+</div>
+
+<div class="code-anchor">
+  <div class="label">读 ③ · 1 小时 · 绑定到 Python</div>
+  <div class="path"><code>csrc/attention/attention_kernels.cu</code> 或 <code>pybind.cpp</code></div>
+  CUDA function 怎么注册成 Python 可调用。看 <code>TORCH_LIBRARY_FRAGMENT</code> 或 <code>PYBIND11_MODULE</code>。
+  <div class="ask">从 Python 调一次这个函数，传入参数怎么变成 GPU 上的 tensor 地址？</div>
+</div>
+
+<h2><span class="num">05</span>Triton · 比 CUDA 友好的中间层</h2>
+
+<p>CUDA 上手太陡。Triton 是 OpenAI 出的<strong>Python-like DSL</strong>，编译成 CUDA。
+vLLM 用 Triton 写跨架构 kernel（AMD ROCm 也能跑）。</p>
+
+<p>动手任务（不可跳）：</p>
+
+<div class="code-anchor">
+  <div class="label">做 · Triton 官方 tutorial 1-3</div>
+  <div class="path"><a href="https://triton-lang.org/main/getting-started/tutorials/index.html" target="_blank">triton-lang.org · tutorials</a></div>
+  <ul>
+    <li>1: vector add — 学 program_id / load / store。</li>
+    <li>2: fused softmax — 学 SRAM 上做归约。</li>
+    <li>3: matmul — 学 block tiling、autotune。</li>
+  </ul>
+  做完 3 个，你已经能写 80% 的 element-wise 和 reduce 类 kernel。
+</div>
+
+<p>做完 tutorial 回头看 vLLM 的 Triton kernel：</p>
+
+<div class="code-anchor">
+  <div class="label">读 · vLLM Triton attention</div>
+  <div class="path"><code>vllm/attention/ops/paged_attn.py</code> (或 v1 路径下)</div>
+  Python 写的 Triton kernel。<strong>比 CUDA 版可读 5 倍</strong>。
+  <div class="ask">对比同功能 CUDA 版，Triton 版"省"掉了什么？(答：手动 shared memory 管理、thread 协作、grid 配置——Triton 编译器代办)</div>
+</div>
+
+<h2><span class="num">06</span>动手 · 跑 benchmark 画图</h2>
+
+<p>本月的硬核作业。<strong>这一份数据将出现在你的简历/blog 上。</strong></p>
+
+<h3>实验设计</h3>
+
+<ol>
+  <li>在云上 A100 / A10 跑 <code>benchmarks/benchmark_throughput.py</code> 或 <code>benchmark_serving.py</code>。</li>
+  <li>变量：batch size (1, 8, 32, 64)、prompt 长度 (128, 1024, 4096)、output 长度 (64, 256)。</li>
+  <li>记录：throughput (tokens/s)、TTFT、p50/p99 latency。</li>
+  <li>用 matplotlib 画图：
+    <ul>
+      <li>throughput vs batch size（应该 sub-linear 增长）</li>
+      <li>TTFT vs prompt length（应该线性）</li>
+      <li>显存占用 vs 并发数</li>
+    </ul>
+  </li>
+</ol>
+
+<h3>对照实验（可选但加分）</h3>
+
+<ul>
+  <li>对比 <code>--enforce-eager</code>（关 CUDA graph）vs 默认。CUDA graph 减少 launch overhead，在 decode 阶段差异显著。</li>
+  <li>对比不同 attention backend（<code>VLLM_ATTENTION_BACKEND=FLASH_ATTN</code> vs <code>XFORMERS</code> vs <code>FLASHINFER</code>）。</li>
+  <li>对比 <code>--max-num-seqs</code> 不同值看 throughput-latency Pareto。</li>
+</ul>
+
+<div class="callout check">
+  <div class="label">✓ 你将看到的现象</div>
+  <ul>
+    <li>Throughput 随 batch size 增长但<strong>不线性</strong>：到某个点 KV 显存撑爆，preempt 开始，曲线压平。</li>
+    <li>TTFT 在大 batch 下显著上升（prefill 排队）。</li>
+    <li>FlashAttention vs XFormers 差异在 ~10-30%。</li>
+    <li>CUDA graph 在 decode 重的负载下给 5-15% 提速。</li>
+  </ul>
+</div>
+
+<h2><span class="num">07</span>本月 PR 候选</h2>
+
+<ul>
+  <li>给某个 Triton kernel 加 autotune（不同 BLOCK_SIZE 上 benchmark 自动选最佳）。</li>
+  <li>新 GPU 架构（如 H100、B100）的 kernel 适配补全。</li>
+  <li>修一个 numerical issue（fp16 vs fp32 累加导致的精度问题）。</li>
+  <li>补 benchmark：给某个少 cover 的 workload 加 benchmark 脚本 + baseline 数据。</li>
+</ul>
+
+<div class="callout warn">
+  <div class="label">⚠ 写 CUDA PR 前注意</div>
+  Kernel PR 是<strong>最难 merge</strong>的——reviewer 严、CI 慢、需要多种 GPU 测。
+  推荐先从 Triton kernel / benchmark 切入，建立信任，再碰 CUDA 主战场。
+</div>
+
+<h2><span class="num">08</span>速补材料</h2>
+
+<ul>
+  <li><strong>CMU 15-418 Parallel Computing</strong> · <a href="http://15418.courses.cs.cmu.edu/" target="_blank">课程主页</a> — 第 1-2 课讲缓存层级 + GPU 架构，比 CS162 强。</li>
+  <li><strong>CUDA C++ Programming Guide</strong> · chapter 4-6（thread hierarchy, memory model）。一个下午翻完。</li>
+  <li><strong>Triton 官方 docs</strong> · tutorial 1-5 必做、6-7 选做（FP8）。</li>
+  <li><strong>FlashAttention 论文</strong> · v1 (NeurIPS'22) 读懂思想；v2/v3 可选。</li>
+</ul>
+
+<h2><span class="num">09</span>本页自检</h2>
+
+<div class="selfcheck">
+  <h4>Month 4 结束时这些应该全部 ✓</h4>
+  <ul>
+    <li><input type="checkbox" id="k1"/><label for="k1">"为什么现代 GPU 推理常常 memory-bound 而不是 compute-bound？" 我能讲清。</label></li>
+    <li><input type="checkbox" id="k2"/><label for="k2">FlashAttention 的核心 trick 是什么？为什么数学等价？</label></li>
+    <li><input type="checkbox" id="k3"/><label for="k3">Triton tutorial 1-3 我都跑通了。</label></li>
+    <li><input type="checkbox" id="k4"/><label for="k4">我读过 <code>paged_attention_v1.cu</code> 的主 kernel 至少一遍，知道它的循环结构。</label></li>
+    <li><input type="checkbox" id="k5"/><label for="k5">Benchmark 数据已采集，画了至少 3 张图。</label></li>
+    <li><input type="checkbox" id="k6"/><label for="k6">CUDA graph 是什么？为什么 vLLM 用它？</label></li>
+    <li><input type="checkbox" id="k7"/><label for="k7">本月已有 kernel / benchmark 方向的 PR。</label></li>
+  </ul>
+</div>
+
+<div class="pagenav">
+  <a class="prev" href="04-scheduler.html"><div class="dir">prev</div><div class="ttl">M3 · 调度器</div></a>
+  <a class="next" href="06-mini-vllm.html"><div class="dir">next</div><div class="ttl">M5 · mini-vLLM</div></a>
+</div>
+
+</main>
+</div>
+
+<script src="../assets/app.js"></script>
+</body>
+</html>

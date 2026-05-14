@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OS ↔ vLLM 速查 — Infra Learning Path</title>
+<link rel="stylesheet" href="../assets/style.css" />
+</head>
+<body>
+
+<button class="menu-btn" aria-label="菜单">☰ 目录</button>
+
+<div class="layout">
+
+<aside class="sidebar">
+  <a href="../index.html" class="brand"><span class="dot"></span>Infra Learning Path</a>
+  <div class="tagline">用 vLLM 学 AI infra · just-in-time · 问题驱动</div>
+  <div class="nav-group"><div class="nav-label">起步</div><nav><ul>
+    <li><a href="../index.html"><span class="idx">/</span>主页 · 概览</a></li>
+    <li><a href="00-mental-model.html"><span class="idx">00</span>心智模型</a></li>
+    <li><a href="01-setup.html"><span class="idx">01</span>Week 0 · 环境</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">6 个月主线</div><nav><ul>
+    <li><a href="02-entrypoints.html"><span class="idx">M1</span>入口与生命周期</a></li>
+    <li><a href="03-memory.html"><span class="idx">M2</span>内存 · PagedAttention</a></li>
+    <li><a href="04-scheduler.html"><span class="idx">M3</span>调度器</a></li>
+    <li><a href="05-kernels.html"><span class="idx">M4</span>Kernel &amp; 性能</a></li>
+    <li><a href="06-mini-vllm.html"><span class="idx">M5</span>原创 mini-vLLM</a></li>
+  </ul></nav></div>
+  <div class="nav-group"><div class="nav-label">参考</div><nav><ul>
+    <li><a href="07-papers.html"><span class="idx">P</span>10 篇论文导读</a></li>
+    <li><a href="08-os-bridge.html"><span class="idx">OS</span>OS ↔ vLLM 速查</a></li>
+  </ul></nav></div>
+  <div class="foot">源仓库 <a href="https://github.com/WeishuZ/infra-learning-path" target="_blank" rel="noopener">WeishuZ/infra-learning-path</a></div>
+</aside>
+
+<main class="content">
+
+<div class="crumbs">
+  <a href="../index.html">home</a><span class="sep">/</span>tutorial<span class="sep">/</span>OS 速查
+</div>
+
+<h1 class="page-title">OS ↔ vLLM 速查</h1>
+<p class="page-sub">遇到 vLLM 某个模块卡住？反查这张表 → 找对应 OS 概念 → 用 OSTEP / 6.S081 补 → 回来继续读。</p>
+
+<p class="lede">
+  这页是常驻参考。<strong>不需要从头到尾读</strong>——
+  当你在 vLLM 源码里看到某个陌生模块时，回到这页查它在 OS 里对应什么，然后去补那一块。
+</p>
+
+<h2><span class="num">01</span>核心对照大表</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>vLLM 模块 / 概念</th>
+      <th>OS 对应</th>
+      <th>关键学习材料</th>
+      <th>vLLM 源码位置</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>PagedAttention KV cache</strong></td>
+      <td>虚拟内存 + 分页</td>
+      <td>OSTEP 13 / 15 / 18</td>
+      <td><code>vllm/v1/core/kv_cache_manager.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Block table</strong></td>
+      <td>Page table</td>
+      <td>OSTEP 18 / 19</td>
+      <td><code>vllm/v1/core/block_pool.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Block allocator</strong></td>
+      <td>Physical frame allocator / buddy</td>
+      <td>OSTEP 17</td>
+      <td><code>vllm/v1/core/block_pool.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Prefix caching</strong></td>
+      <td>Page cache + COW</td>
+      <td>OSTEP 39 (file system intro)</td>
+      <td><code>vllm/v1/core/</code> · 搜 <code>prefix_cache</code></td>
+    </tr>
+    <tr>
+      <td><strong>Prefix cache eviction</strong></td>
+      <td>Page replacement (LRU / Clock)</td>
+      <td>OSTEP 22</td>
+      <td><code>BlockPool.evict</code></td>
+    </tr>
+    <tr>
+      <td><strong>CPU offload / swap-out</strong></td>
+      <td>Swap to disk</td>
+      <td>OSTEP 21</td>
+      <td><code>vllm/v1/worker/cache_engine.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Continuous batching</strong></td>
+      <td>Process scheduler · time-sharing</td>
+      <td>OSTEP 7 / 8 / 9</td>
+      <td><code>vllm/v1/core/sched/scheduler.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Preemption</strong></td>
+      <td>Process preemption · context switch</td>
+      <td>OSTEP 7</td>
+      <td><code>scheduler.py</code> · <code>_preempt</code></td>
+    </tr>
+    <tr>
+      <td><strong>Token budget</strong></td>
+      <td>Quantum / time slice</td>
+      <td>OSTEP 8 (MLFQ)</td>
+      <td><code>SchedulingBudget</code> dataclass</td>
+    </tr>
+    <tr>
+      <td><strong>Engine main loop</strong></td>
+      <td>Kernel main loop / event loop</td>
+      <td>OSTEP 6</td>
+      <td><code>vllm/v1/engine/core.py</code> · <code>run_busy_loop</code></td>
+    </tr>
+    <tr>
+      <td><strong>HTTP server async</strong></td>
+      <td>I/O multiplexing (epoll / async)</td>
+      <td>OSTEP 39 · UNIX I/O models</td>
+      <td><code>vllm/entrypoints/openai/api_server.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Multi-process workers</strong></td>
+      <td>Process · fork / exec</td>
+      <td>OSTEP 4 / 5</td>
+      <td><code>vllm/v1/executor/</code></td>
+    </tr>
+    <tr>
+      <td><strong>ZMQ engine ↔ API IPC</strong></td>
+      <td>IPC (pipe / socket / message queue)</td>
+      <td>OSTEP 50</td>
+      <td><code>vllm/v1/engine/async_llm.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Scheduler 主锁</strong></td>
+      <td>Lock / monitor pattern</td>
+      <td>OSTEP 28 / 30</td>
+      <td><code>scheduler.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>Multi-GPU (TP/PP)</strong></td>
+      <td>分布式系统 · RPC</td>
+      <td>OSTEP 48 (RPC) + Megatron 论文</td>
+      <td><code>vllm/distributed/</code></td>
+    </tr>
+    <tr>
+      <td><strong>Multi-LoRA</strong></td>
+      <td>多进程隔离 · 进程间内存共享</td>
+      <td>OSTEP 4</td>
+      <td><code>vllm/lora/</code></td>
+    </tr>
+    <tr>
+      <td><strong>Weight loading (mmap)</strong></td>
+      <td>mmap · demand paging</td>
+      <td>OSTEP 22 · 39</td>
+      <td><code>vllm/model_executor/model_loader/</code></td>
+    </tr>
+    <tr>
+      <td><strong>CUDA graph capture</strong></td>
+      <td>(无直接 OS 对应) · 接近 batch syscall</td>
+      <td>CUDA docs · stream graph</td>
+      <td><code>vllm/v1/worker/gpu_model_runner.py</code></td>
+    </tr>
+    <tr>
+      <td><strong>FlashAttention IO-aware</strong></td>
+      <td>缓存友好的算法设计</td>
+      <td>CMU 15-418 lec 2</td>
+      <td>外部依赖 <code>flash-attn</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2><span class="num">02</span>OS 章节优先级</h2>
+
+<p>OSTEP 全书 700+ 页，但你<strong>只需要</strong>下面这些：</p>
+
+<div class="cards-2">
+  <div class="card">
+    <h3>🔴 必读 (~150 页)</h3>
+    <ul>
+      <li>Ch 4-5 · 进程</li>
+      <li>Ch 7-10 · 调度</li>
+      <li>Ch 13-22 · 虚拟内存（选读 13/15/18/21/22）</li>
+      <li>Ch 28-30 · 同步原语</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>🟡 用到再翻</h3>
+    <ul>
+      <li>Ch 39 · 文件 I/O 与 page cache 类比</li>
+      <li>Ch 48-50 · RPC / 一致性（多卡时）</li>
+      <li>Ch 6 · 系统调用机制</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>🟢 略过</h3>
+    <ul>
+      <li>设备驱动、bootloader</li>
+      <li>FAT / ext2 内部结构</li>
+      <li>安全 / 权限</li>
+      <li>C 内存安全 lab</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>📺 视频替代</h3>
+    <p>看不进书时：MIT 6.S081 视频选这三节：</p>
+    <ul>
+      <li>Virtual memory (lec 4)</li>
+      <li>Scheduling (lec 9-10)</li>
+      <li>Locking (lec 12)</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="num">03</span>"我看到 X 了，该补什么"决策树</h2>
+
+<div class="diagram">
+  <svg viewBox="0 0 760 460" xmlns="http://www.w3.org/2000/svg" style="max-width:720px;">
+    <defs>
+      <marker id="az" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#78716c"/>
+      </marker>
+    </defs>
+    <g font-family="ui-sans-serif, system-ui" font-size="12">
+
+      <rect x="280" y="20" width="200" height="40" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+      <text x="380" y="44" text-anchor="middle" font-weight="700">读 vLLM 代码卡住</text>
+
+      <rect x="280" y="90" width="200" height="40" rx="4" fill="#f7f5ee" stroke="#a8a29e"/>
+      <text x="380" y="114" text-anchor="middle">是关于"内存 / 块"？</text>
+
+      <rect x="40" y="170" width="200" height="50" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="140" y="190" text-anchor="middle" font-weight="600">→ OSTEP 13/15/18/21/22</text>
+      <text x="140" y="206" text-anchor="middle" font-size="11" fill="#166534">+ PagedAttention 论文</text>
+
+      <rect x="280" y="170" width="200" height="40" rx="4" fill="#f7f5ee" stroke="#a8a29e"/>
+      <text x="380" y="194" text-anchor="middle">是关于"调度 / batch"？</text>
+
+      <rect x="520" y="170" width="200" height="50" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="620" y="190" text-anchor="middle" font-weight="600">→ OSTEP 7-10</text>
+      <text x="620" y="206" text-anchor="middle" font-size="11" fill="#166534">+ Orca / Sarathi 论文</text>
+
+      <rect x="280" y="240" width="200" height="40" rx="4" fill="#f7f5ee" stroke="#a8a29e"/>
+      <text x="380" y="264" text-anchor="middle">是关于"并发 / 锁 / 进程"？</text>
+
+      <rect x="40" y="320" width="200" height="50" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="140" y="340" text-anchor="middle" font-weight="600">→ OSTEP 28-30 + 4-5</text>
+      <text x="140" y="356" text-anchor="middle" font-size="11" fill="#166534">+ Python asyncio docs</text>
+
+      <rect x="280" y="320" width="200" height="40" rx="4" fill="#f7f5ee" stroke="#a8a29e"/>
+      <text x="380" y="344" text-anchor="middle">是关于"GPU / CUDA / kernel"？</text>
+
+      <rect x="520" y="320" width="200" height="50" rx="4" fill="#f0fdf4" stroke="#16a34a"/>
+      <text x="620" y="340" text-anchor="middle" font-weight="600">→ CMU 15-418 lec 1-2</text>
+      <text x="620" y="356" text-anchor="middle" font-size="11" fill="#166534">+ FlashAttention + Triton</text>
+
+      <rect x="280" y="390" width="200" height="50" rx="4" fill="#fef2f2" stroke="#991b1b"/>
+      <text x="380" y="410" text-anchor="middle" font-weight="600">都不对？</text>
+      <text x="380" y="426" text-anchor="middle" font-size="11" fill="#991b1b">git grep 关键词 + Slack 问</text>
+
+      <g stroke="#78716c" stroke-width="1.5" fill="none">
+        <path d="M 380 60 L 380 90" marker-end="url(#az)"/>
+        <path d="M 280 110 L 240 170" marker-end="url(#az)"/>
+        <path d="M 480 110 L 480 170" marker-end="url(#az)"/>
+        <path d="M 480 170 L 520 170" marker-end="url(#az)"/>
+        <path d="M 380 130 L 380 170" marker-end="url(#az)"/>
+        <path d="M 280 190 L 240 220" marker-end="url(#az)"/>
+        <path d="M 380 210 L 380 240" marker-end="url(#az)"/>
+        <path d="M 280 260 L 240 320" marker-end="url(#az)"/>
+        <path d="M 480 260 L 520 320" marker-end="url(#az)"/>
+        <path d="M 380 280 L 380 320" marker-end="url(#az)"/>
+        <path d="M 380 360 L 380 390" marker-end="url(#az)"/>
+      </g>
+
+    </g>
+  </svg>
+</div>
+
+<h2><span class="num">04</span>常用补充材料</h2>
+
+<ul>
+  <li><strong>OSTEP</strong> (免费) · <a href="https://pages.cs.wisc.edu/~remzi/OSTEP/" target="_blank">pages.cs.wisc.edu/~remzi/OSTEP/</a></li>
+  <li><strong>MIT 6.S081</strong> (视频 + lab) · <a href="https://pdos.csail.mit.edu/6.S081/" target="_blank">pdos.csail.mit.edu/6.S081/</a></li>
+  <li><strong>CMU 15-418 Parallel</strong> · <a href="http://15418.courses.cs.cmu.edu/" target="_blank">15418.courses.cs.cmu.edu</a> · 缓存层级 + GPU 架构</li>
+  <li><strong>Berkeley AISys Fa2024</strong> · <a href="https://ucbsky.github.io/aisys-fa2024/schedule/" target="_blank">schedule</a> · 现代 LLM 系统论文地图</li>
+  <li><strong>Triton tutorial</strong> · <a href="https://triton-lang.org/main/getting-started/tutorials/index.html" target="_blank">triton-lang.org</a></li>
+</ul>
+
+<h2><span class="num">05</span>反原则 · 别这么干</h2>
+
+<ul>
+  <li>❌ 不要先把 OSTEP 整本刷完再来读 vLLM。<strong>不学到具体用处的概念都会忘</strong>。</li>
+  <li>❌ 不要按 AISys schedule 顺序读 24 篇论文。它是给学生一学期的，不是给你 6 个月的。</li>
+  <li>❌ 不要把笔记做成 PPT。每篇论文一段话 + 跟 vLLM 源码哪一行对得上，比精美笔记有用 10 倍。</li>
+  <li>❌ 不要等"准备好"才提 PR。Month 1 就交第一个，哪怕是 typo。</li>
+  <li>❌ 不要先建仓库再写代码。先在 single file 里把 mini-vLLM 跑起来，再切模块。</li>
+</ul>
+
+<hr>
+
+<p class="muted small">
+  这页是常驻参考。<strong>书签它</strong>，6 个月里你会回来很多次。
+</p>
+
+<div class="pagenav">
+  <a class="prev" href="07-papers.html"><div class="dir">prev</div><div class="ttl">10 篇论文</div></a>
+  <a class="next" href="../index.html"><div class="dir">回到</div><div class="ttl">主页</div></a>
+</div>
+
+</main>
+</div>
+
+<script src="../assets/app.js"></script>
+</body>
+</html>
