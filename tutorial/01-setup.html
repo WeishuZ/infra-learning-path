@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>01 · Week 0 环境 — Infra Learning Path</title>
+<meta name="description" content="vLLM 环境搭建：本地 Mac + 云 GPU，从 fork 到第一个 PR，含故障排查矩阵。" />
 <link rel="stylesheet" href="../assets/style.css" />
 </head>
 <body>
@@ -47,6 +48,7 @@
   这一节<strong>不教 AI</strong>，只解决"我连环境都跑不起来"这个最劝退的问题。
   vLLM 有 C++/CUDA 部分，新手最容易栽在这。读完这页后你应该有：
   一份能复现的 Python 环境、一台能开关的云 GPU、一个 fork 好的 vLLM、和一次成功跑通的对话推理。
+  全程预算控制在 $5 以内。
 </p>
 
 <div class="callout q">
@@ -59,10 +61,11 @@
   <div class="body">
     <p><strong>能学，能贡献，不能跑大模型推理</strong>。</p>
     <ul>
-      <li>Mac 上可以：读代码、跑 Python 部分的单测（vLLM 有大量 CPU-only 测试）、写 mini-vLLM、写 blog。</li>
-      <li>Mac 上不行：跑 CUDA kernel、benchmark、用 7B+ 模型测延迟。这些必须上云。</li>
+      <li>Mac 上可以：读代码、跑 Python 部分的单测（vLLM 有大量 CPU-only 测试）、写 mini-vLLM、写 blog、改 docs。</li>
+      <li>Mac 上不行：跑 CUDA kernel、benchmark、用 7B+ 模型测延迟、跑 GPU 单测。这些必须上云。</li>
       <li>实际节奏：90% 时间本地、10% 时间云上验证。云 GPU 按需开关，每月 $30–80 完全够。</li>
     </ul>
+    <p>vLLM 也有<strong>experimental CPU backend</strong>（Intel Xeon），用 oneDNN，能在 Mac/Linux 上跑小模型，但生产 workload 还是 GPU。学习目的：CPU backend 能让你在 Mac 上跑通端到端 demo，看懂调度逻辑。</p>
   </div>
 </details>
 
@@ -72,21 +75,27 @@
   <thead><tr><th>场景</th><th>最低</th><th>推荐</th><th>预算</th></tr></thead>
   <tbody>
     <tr><td>读代码 / 跑 CPU 单测 / 写 blog</td><td>任意笔记本</td><td>16GB RAM Mac/PC</td><td>$0</td></tr>
+    <tr><td>跑 1B fp16 推理 (验证)</td><td>消费 GPU 8GB (3060, etc.)</td><td>—</td><td>$0 if own</td></tr>
     <tr><td>跑 7B fp16 推理 (验证)</td><td>A10 24GB (~$0.4/h)</td><td>A100 40GB</td><td>$30–80/月</td></tr>
-    <tr><td>跑 benchmark / 多并发压测</td><td>A100 40GB</td><td>A100 80GB</td><td>$80–200/月</td></tr>
-    <tr><td>多卡 TP/PP 实验 (Month 4+)</td><td>2× A10</td><td>2× A100</td><td>$200+/月</td></tr>
-    <tr><td>训练 / 大模型微调</td><td colspan="3" class="muted">这不在本路径里。要做就单独申请实习或学校 cluster。</td></tr>
+    <tr><td>跑 benchmark / 多并发压测</td><td>A100 40GB</td><td>A100 80GB / H100 80GB</td><td>$80–200/月</td></tr>
+    <tr><td>多卡 TP/PP 实验 (Month 4+)</td><td>2× A10</td><td>2× A100 NVLink</td><td>$200+/月</td></tr>
+    <tr><td>训练 / 大模型微调</td><td colspan="3" class="muted">这不在本路径里。要做就单独申请实习 / 学校 cluster / 抢预算。</td></tr>
   </tbody>
 </table>
 
 <div class="callout tip">
   <div class="label">💡 GPU 怎么选 provider</div>
-  <ul>
-    <li><a href="https://www.runpod.io/" target="_blank">RunPod</a> — UI 最友好，spot 价格便宜，A10 ~$0.30/h，A100 80GB ~$1.5/h。</li>
-    <li><a href="https://vast.ai/" target="_blank">Vast.ai</a> — 拍卖市场，比 RunPod 更便宜但不稳定。适合非交互式 batch 任务。</li>
-    <li>Lambda Labs / Modal / Together — 更贵但官方 image 体验好。</li>
-  </ul>
-  <strong>都支持按秒计费 + 镜像快照</strong>。规则：每次开机最多 2 小时，下机前 push 代码 + 关机。
+  <table>
+    <thead><tr><th>Provider</th><th>类型</th><th>价格 (A10)</th><th>价格 (A100 80G)</th><th>体验</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://www.runpod.io/" target="_blank">RunPod</a></td><td>容器，按秒</td><td>~$0.30/h</td><td>~$1.5/h</td><td>UI 友好，spot 便宜</td></tr>
+      <tr><td><a href="https://vast.ai/" target="_blank">Vast.ai</a></td><td>拍卖市场</td><td>~$0.20/h</td><td>~$1.0/h</td><td>便宜但 host 信誉不一</td></tr>
+      <tr><td><a href="https://lambda.ai/" target="_blank">Lambda Labs</a></td><td>VM</td><td>~$0.75/h</td><td>~$1.5/h</td><td>官方 image 全</td></tr>
+      <tr><td><a href="https://modal.com/" target="_blank">Modal</a></td><td>FaaS</td><td>—</td><td>~$2.0/h</td><td>无服务器，按请求计费</td></tr>
+      <tr><td><a href="https://together.ai/" target="_blank">Together</a></td><td>API</td><td>—</td><td>—</td><td>用别人的 vLLM，没法 debug</td></tr>
+    </tbody>
+  </table>
+  <strong>初学推荐 RunPod spot</strong>：UI 简单、按秒计费、镜像快照支持、社群答疑活跃。规则：每次开机最多 2 小时，下机前 push 代码 + 关机。
 </div>
 
 <h2><span class="num">02</span>本地环境（Mac / Linux 都行）</h2>
@@ -96,13 +105,13 @@
 <pre><code># Python 3.11 (vLLM 当前支持 3.9-3.12，3.11 最稳)
 python --version    # → Python 3.11.x
 
-# uv 是最快的 Python 包管理器，强推
+# uv 是最快的 Python 包管理器，强推（比 pip 快 10-100×）
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # git 配好用户名 / SSH key
 git config --global user.name "WeishuZ"
-git config --global user.email "myludus@outlook.com"
-</code></pre>
+git config --global user.email "你的邮箱"
+ssh-keygen -t ed25519 -C "你的邮箱"        # 然后把 ~/.ssh/id_ed25519.pub 加到 GitHub</code></pre>
 
 <h3>2.2 Fork 并 clone vLLM</h3>
 
@@ -117,7 +126,12 @@ git remote add upstream https://github.com/vllm-project/vllm.git
 git remote -v
 # origin    git@github.com:WeishuZ/vllm.git (fetch/push)
 # upstream  https://github.com/vllm-project/vllm.git (fetch/push)
-</code></pre>
+
+# 同步上游 main
+git fetch upstream
+git checkout main
+git merge upstream/main
+git push origin main</code></pre>
 
 <h3>2.3 安装（本地 CPU-only 模式）</h3>
 
@@ -126,17 +140,27 @@ git remote -v
 <pre><code>uv venv --python 3.11
 source .venv/bin/activate
 
-# vLLM 提供 CPU-only wheel（适合 Mac 阅读和单测）
-VLLM_TARGET_DEVICE=cpu pip install -e . --extra-index-url https://download.pytorch.org/whl/cpu
+# 方案 A · CPU-only wheel (适合阅读代码 + 单测)
+VLLM_TARGET_DEVICE=cpu pip install -e . \
+  --extra-index-url https://download.pytorch.org/whl/cpu
 
-# 或者只装 dev deps 不 build C++ 部分（更快，只能读代码不能 run）
+# 方案 B · 只装 dev deps，不 build C++（最快，只能读代码不能 run）
 pip install -r requirements/dev.txt
-</code></pre>
+
+# 验证 (方案 A 才行)
+python -c "import vllm; print(vllm.__version__)"</code></pre>
 
 <div class="callout warn">
   <div class="label">⚠ 编译易踩坑</div>
-  vLLM 的 setup.py 会调 CMake 编译 C++/CUDA 部分。在 Mac 上首次 build 容易挂 —— 报错很正常。先 <strong>跳过 build，纯读源码</strong>，等上云再 build。
-  <br>具体 build 文档：<a href="https://docs.vllm.ai/en/latest/getting_started/installation.html" target="_blank">docs.vllm.ai/installation</a>
+  vLLM 的 setup.py 会调 CMake 编译 C++/CUDA 部分。在 Mac 上首次 build 容易挂——报错很正常。具体常见问题：
+  <ul>
+    <li><strong>cmake 找不到</strong>：<code>brew install cmake ninja</code></li>
+    <li><strong>编译器版本太旧</strong>：用 Xcode 自带的 clang 通常够；Linux 上需要 gcc 9+</li>
+    <li><strong>protobuf 冲突</strong>：在 venv 里 <code>pip install protobuf==3.20</code></li>
+    <li><strong>build 时 OOM</strong>：<code>MAX_JOBS=2 pip install -e .</code> 限并行</li>
+  </ul>
+  策略：第一次本地<strong>跳过 build</strong>，纯读源码；等上云再 build 完整版。
+  Build 文档：<a href="https://docs.vllm.ai/en/latest/getting_started/installation.html" target="_blank">docs.vllm.ai/installation</a>
 </div>
 
 <h3>2.4 pre-commit hooks</h3>
@@ -146,7 +170,22 @@ pip install -r requirements/dev.txt
 <pre><code>pip install pre-commit
 pre-commit install
 pre-commit run --all-files   # 第一次跑会慢，之后只检查 diff
-</code></pre>
+
+# 常见报错快速修
+ruff check --fix              # 自动修可修的
+mypy vllm/                    # 类型问题，手动修
+typos                         # 错别字</code></pre>
+
+<h3>2.5 IDE 配置（可选但强推）</h3>
+
+<p>用 <strong>VSCode + Cursor / IntelliJ</strong>，配几个插件让阅读速度翻倍：</p>
+
+<ul>
+  <li><strong>Python (Microsoft)</strong> + <strong>Pylance</strong> · 跳转到定义、查类型</li>
+  <li><strong>CUDA C++</strong> · 高亮 .cu 文件</li>
+  <li><strong>Git Lens</strong> · 看每行的 blame，知道这行代码"为什么被加进来"——读 vLLM 历史变更必备</li>
+  <li><strong>Project Manager</strong> · vLLM + 你的 fork + mini-vLLM 切换</li>
+</ul>
 
 <h2><span class="num">03</span>云上 GPU：第一次跑通</h2>
 
@@ -158,7 +197,7 @@ pre-commit run --all-files   # 第一次跑会慢，之后只检查 diff
   <li>RunPod → Deploy → 选 <strong>Community Cloud → A10 24GB</strong>（spot $0.20–0.30/h）。</li>
   <li>镜像：<code>runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04</code>。</li>
   <li>磁盘：50GB volume 够（模型 ~14GB + 代码 + 缓存）。</li>
-  <li>SSH 启用，开 port 8000。</li>
+  <li>SSH 启用，开 port 8000（vLLM 默认）。</li>
   <li>点 Deploy → 30 秒后 SSH 上去。</li>
 </ol>
 
@@ -168,12 +207,15 @@ pre-commit run --all-files   # 第一次跑会慢，之后只检查 diff
 git clone https://github.com/WeishuZ/vllm.git
 cd vllm
 
-# 用官方 wheel 装最新稳定版（推荐，省得 build CUDA）
+# 选项 A · 用官方 wheel（推荐，省得 build CUDA）
 pip install vllm
+
+# 选项 B · 从源 build（你要改 C++/CUDA 代码时用）
+pip install -e . --verbose
 
 # 验证
 python -c "import vllm; print(vllm.__version__)"
-</code></pre>
+nvidia-smi                         # 看 GPU 状态</code></pre>
 
 <h3>3.3 第一次推理</h3>
 
@@ -182,6 +224,7 @@ vllm serve meta-llama/Llama-3.1-8B-Instruct \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.85
 
+# 第一次跑：下载模型 ~14GB，要 2-3 分钟（用了 HF cache 后秒级）
 # 等到看到 "Application startup complete." 约 60-90 秒
 # 在另一个终端：
 curl http://localhost:8000/v1/chat/completions \
@@ -189,23 +232,23 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{
     "model": "meta-llama/Llama-3.1-8B-Instruct",
     "messages": [{"role": "user", "content": "用一句话解释 PagedAttention"}]
-  }'
-</code></pre>
+  }'</code></pre>
 
 <div class="callout check">
   <div class="label">✓ 这一步成功 = Week 0 已完成 70%</div>
-  你现在有一台能 serve LLM 的机器。<strong>立刻看一下日志</strong> —— vLLM 会打印它分配了多少 KV blocks、block size 多少。
-  这些数字将在 Month 2 里被你彻底理解。
+  你现在有一台能 serve LLM 的机器。<strong>立刻看一下日志</strong>——vLLM 会打印：
+  <pre><code>GPU KV cache size: X tokens
+Maximum concurrency for Y tokens per request: Z.NNx</code></pre>
+  这两个数字将在 M2 里被你<strong>彻底理解</strong>。现在先记下来。
 </div>
 
 <h3>3.4 下机习惯</h3>
 
-<pre><code># 退出 server，commit 任何改动
+<pre><code># 退出 server (Ctrl-C)，commit 任何改动
 git add -A && git commit -m "wip: notes" && git push
 
 # 立刻在 RunPod 控制台 Stop pod
-# 不 stop 一直按时计费！
-</code></pre>
+# 不 stop 一直按时计费！</code></pre>
 
 <div class="callout danger">
   <div class="label">⚠ 账单事故</div>
@@ -214,44 +257,72 @@ git add -A && git commit -m "wip: notes" && git push
     <li>设手机闹钟 90 分钟提醒。</li>
     <li>RunPod 账户里设 spending limit（$50/月硬限）。</li>
     <li>把 stop 操作写成 shell alias <code>alias byepod='runpodctl stop pod $POD_ID'</code>。</li>
+    <li>每次开机前在 calendar 写"$X 上限"，到时间 alarm 响。</li>
   </ol>
+  实战经验：3 个月内至少会忘 1 次。<strong>spending limit 是救命的</strong>。
 </div>
 
-<h2><span class="num">04</span>走通第一个 PR 流程（保底 PR）</h2>
+<h2><span class="num">04</span>故障排查矩阵</h2>
 
-<p>
-  Month 1 的 KPI 是"<strong>第一个 merged PR</strong>"，无论多小都行。
-  Week 0 末尾就先跑一遍 PR 流程，把陌生感消掉。
-</p>
+<p>常见症状 → 最可能原因 → 排查步骤：</p>
 
-<div class="code-anchor">
-  <div class="label">行动</div>
-  <div class="path">vllm/docs/</div>
-  打开 vLLM 文档目录，找一个 typo / 措辞不清 / 链接失效。<strong>有，几乎一定有。</strong>
-  <div class="ask">把它修了，提一个 docs-only PR。</div>
-</div>
+<table>
+  <thead><tr><th>症状</th><th>原因</th><th>排查 / 修复</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>vllm serve</code> 启动 OOM</td>
+      <td>显存不够装模型 + KV pool</td>
+      <td>降 <code>--gpu-memory-utilization 0.7</code> 或 <code>--max-model-len 2048</code>，或换更小模型</td>
+    </tr>
+    <tr>
+      <td>下载模型 403</td>
+      <td>HF Llama 需要 access</td>
+      <td>在 HF 上申请 + <code>huggingface-cli login</code>，或换 Qwen / Mistral</td>
+    </tr>
+    <tr>
+      <td>下载慢</td>
+      <td>HF 镜像没设</td>
+      <td>设 <code>HF_ENDPOINT=https://hf-mirror.com</code>（国内）</td>
+    </tr>
+    <tr>
+      <td>CUDA out of memory 但 nvidia-smi 显示有空闲</td>
+      <td>fragmentation 或前一个进程没真正释放</td>
+      <td><code>nvidia-smi</code> 看进程，<code>kill -9</code> 残留</td>
+    </tr>
+    <tr>
+      <td>vLLM 报 <code>flash-attn not installed</code></td>
+      <td>flash-attn wheel 与 CUDA 版不匹配</td>
+      <td><code>pip install flash-attn --no-build-isolation</code> 或换 backend：<code>VLLM_ATTENTION_BACKEND=XFORMERS</code></td>
+    </tr>
+    <tr>
+      <td>curl 返回 connection refused</td>
+      <td>port 没暴露 或 server 还没起完</td>
+      <td>等到 "Application startup complete." 再 curl</td>
+    </tr>
+    <tr>
+      <td>响应乱码</td>
+      <td>chat template 没匹配模型</td>
+      <td>看模型 README 的 chat template，确认 <code>--chat-template</code> 或用 Instruct 版</td>
+    </tr>
+    <tr>
+      <td>本地 import vllm 报 illegal instruction</td>
+      <td>预编译 wheel 不支持你的 CPU</td>
+      <td>从源 build：<code>pip install -e .</code></td>
+    </tr>
+    <tr>
+      <td>pre-commit 跑很久</td>
+      <td>第一次要装多个工具 + 全文件扫描</td>
+      <td>正常。后续只看 diff，秒级。</td>
+    </tr>
+    <tr>
+      <td>build vLLM 时 nvcc not found</td>
+      <td>CUDA toolkit 没装 / PATH 没配</td>
+      <td><code>which nvcc</code>，没找到就装 cuda-toolkit；container image 选 <code>-devel</code> 后缀</td>
+    </tr>
+  </tbody>
+</table>
 
-<pre><code># 在 fork 里
-git checkout -b docs/fix-typo
-# 改 docs/source/xxx.md
-git add docs/source/xxx.md
-git commit -m "docs: fix typo in xxx"
-git push -u origin docs/fix-typo
-
-# 然后到 GitHub UI 提 PR，目标是 vllm-project/vllm:main
-# 等 CI 跑完（约 10 分钟），把 reviewer 标签贴上
-</code></pre>
-
-<h3>Reviewer 期望的最低标准</h3>
-
-<ul>
-  <li>PR 标题前缀：<code>docs:</code> / <code>[Bugfix]</code> / <code>[Core]</code> / <code>[Kernel]</code>。看一眼最近 10 个 merged PR 学风格。</li>
-  <li>描述里至少写："改了什么 / 为什么改 / 怎么验证"。</li>
-  <li>CI 必须全绿。pre-commit 红的话回去本地 <code>pre-commit run --all-files</code> 修。</li>
-  <li>第一次提 PR 会被要求签 DCO，照 bot 提示来即可。</li>
-</ul>
-
-<h2><span class="num">05</span>选填：本地开发循环</h2>
+<h2><span class="num">05</span>本地开发循环</h2>
 
 <p>如果你完全本地开发，下面这套 loop 最高效：</p>
 
@@ -265,9 +336,84 @@ git push -u origin docs/fix-typo
   <div class="caption">把 pod 当远程 runner。本地代码、远程执行。</div>
 </div>
 
-<p>或者直接 VSCode Remote SSH 进 pod 改代码，简单粗暴。</p>
+<p>或者直接 <strong>VSCode Remote SSH</strong> 进 pod 改代码——简单粗暴，所有 IDE 体验都在 pod 上。</p>
 
-<h2><span class="num">06</span>本页自检</h2>
+<h3>5.1 VSCode Remote SSH 极简设置</h3>
+
+<pre><code># 本地 ~/.ssh/config
+Host runpod
+    HostName ssh.runpod.io
+    Port 12345          # 看 pod console 给的端口
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+    LocalForward 8000 localhost:8000   # 本地能 curl pod 的 server
+
+# VSCode 装 Remote-SSH 扩展
+# Command Palette → Remote-SSH: Connect to Host... → runpod</code></pre>
+
+<p>这样在 Mac 上 <code>curl http://localhost:8000/...</code> 就直接打到 pod 的 vLLM server，因为端口被 forward。</p>
+
+<h2><span class="num">06</span>走通第一个 PR 流程（保底 PR）</h2>
+
+<p>
+  Month 1 的 KPI 是"<strong>第一个 merged PR</strong>"，无论多小都行。
+  Week 0 末尾就先跑一遍 PR 流程，把陌生感消掉。
+</p>
+
+<div class="code-anchor">
+  <div class="label">行动</div>
+  <div class="path">vllm/docs/</div>
+  打开 vLLM 文档目录，找一个 typo / 措辞不清 / 链接失效 / 代码 example 过时。<strong>有，几乎一定有。</strong>
+  <div class="ask">把它修了，提一个 docs-only PR。</div>
+</div>
+
+<pre><code># 在 fork 里
+git checkout -b docs/fix-typo
+# 改 docs/source/xxx.md
+git add docs/source/xxx.md
+git commit -m "docs: fix typo in xxx"
+git push -u origin docs/fix-typo
+
+# 然后到 GitHub UI 提 PR，目标是 vllm-project/vllm:main
+# 等 CI 跑完（约 10 分钟），把 reviewer 标签贴上
+# 注意 DCO 签署：commit message 末尾要有 "Signed-off-by: Your Name <email>"
+# 用 git commit -s 自动加</code></pre>
+
+<h3>6.1 Reviewer 期望的最低标准</h3>
+
+<ul>
+  <li>PR 标题前缀：<code>[Doc]</code> · <code>[Bugfix]</code> · <code>[Core]</code> · <code>[Kernel]</code> · <code>[Hardware][AMD]</code>。看一眼最近 10 个 merged PR 学风格。</li>
+  <li>描述里至少写："改了什么 / 为什么改 / 怎么验证"。模板就在 <code>.github/PULL_REQUEST_TEMPLATE.md</code>。</li>
+  <li>CI 必须全绿。pre-commit 红的话回去本地 <code>pre-commit run --all-files</code> 修。</li>
+  <li>第一次提 PR 会被要求签 DCO（Developer Certificate of Origin），照 bot 提示来：<code>git rebase --signoff</code>。</li>
+  <li>非 trivial PR 通常要测试。看 <code>tests/</code> 目录类似 case 的写法。</li>
+</ul>
+
+<h3>6.2 PR 卡 review 怎么办</h3>
+
+<ul>
+  <li>5 天没人看 → 礼貌 ping 一次：<code>@reviewer-name PTAL when you have a moment, thanks!</code></li>
+  <li>10 天还没看 → 到 vLLM 官方 Slack 的 <code>#vllm-dev</code> 频道发链接</li>
+  <li>不要纠结一个 PR 卡住——<strong>同时推进下一个</strong>，多个 PR 并行</li>
+</ul>
+
+<h2><span class="num">07</span>HuggingFace cache 与磁盘</h2>
+
+<p>HF model cache 默认在 <code>~/.cache/huggingface/</code>，大文件多。两个建议：</p>
+
+<ol>
+  <li><strong>cache 放在 volume 上</strong>，不要放在容器内（pod 关机会丢）：
+    <pre><code>export HF_HOME=/workspace/.hf_cache
+mkdir -p $HF_HOME</code></pre>
+  </li>
+  <li><strong>用 hf_transfer 加速下载</strong>：
+    <pre><code>pip install hf_transfer
+export HF_HUB_ENABLE_HF_TRANSFER=1
+# 下载 Llama 8B 从 ~3 分钟 → ~30 秒</code></pre>
+  </li>
+</ol>
+
+<h2><span class="num">08</span>本页自检</h2>
 
 <div class="selfcheck">
   <h4>Week 0 结束时这些应该全部 ✓</h4>
@@ -276,8 +422,10 @@ git push -u origin docs/fix-typo
     <li><input type="checkbox" id="s2"/><label for="s2">云上 pod 已开过至少一次，<code>vllm serve</code> 成功响应过一次 curl。</label></li>
     <li><input type="checkbox" id="s3"/><label for="s3"><code>pre-commit run --all-files</code> 在我的 fork 上能全绿（或者我知道为什么红）。</label></li>
     <li><input type="checkbox" id="s4"/><label for="s4">我的 fork 已经有 upstream remote，能 <code>git fetch upstream</code>。</label></li>
-    <li><input type="checkbox" id="s5"/><label for="s5">已经提了至少一个 PR（哪怕是 typo 修改）。</label></li>
+    <li><input type="checkbox" id="s5"/><label for="s5">已经提了至少一个 PR（哪怕是 typo 修改），CI 全绿。</label></li>
     <li><input type="checkbox" id="s6"/><label for="s6">我知道<strong>怎么关 pod</strong>，并且关过。账单 $0 风险。</label></li>
+    <li><input type="checkbox" id="s7"/><label for="s7">看过 vLLM 启动日志里 "GPU KV cache size" 和 "Maximum concurrency"，记在笔记里。</label></li>
+    <li><input type="checkbox" id="s8"/><label for="s8">RunPod / Vast 设了 spending limit，邮件提醒开了。</label></li>
   </ul>
 </div>
 

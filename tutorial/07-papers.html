@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>10 篇论文导读 — Infra Learning Path</title>
+<meta name="description" content="vLLM / AI infra 必读论文清单，按读的顺序，每篇含问题—方法—代码对应—追问。" />
 <link rel="stylesheet" href="../assets/style.css" />
 </head>
 <body>
@@ -50,14 +51,16 @@
 </p>
 
 <div class="callout tip">
-  <div class="label">💡 怎么读论文</div>
+  <div class="label">💡 怎么读 infra 论文 · 90 分钟法</div>
   <strong>不要</strong>从摘要读到引用。AI infra 论文几乎统一是这个结构：
   <ol>
-    <li>Intro 最后一段 → 拿走 contribution 列表（看作者觉得自己解了啥）</li>
-    <li>Motivation / Background 一节 → 拿走"现状什么不好"</li>
-    <li>Design 主体 → 找<strong>第一张系统图</strong>，看懂它</li>
-    <li>Evaluation 第一张图 → 拿走"性能提升幅度"</li>
-    <li>Related work → <strong>跳过</strong>，等你自己做研究时再回看</li>
+    <li><strong>Intro 最后一段</strong> → 拿走 contribution 列表（看作者觉得自己解了啥）</li>
+    <li><strong>Motivation / Background</strong> → 拿走"现状什么不好"，一定有 figure 1 量化它</li>
+    <li><strong>Design 主体</strong> → 找<strong>第一张系统图</strong>，看懂它</li>
+    <li><strong>Implementation</strong> → 略读，知道用了什么技术栈就行</li>
+    <li><strong>Evaluation 第一张图</strong> → 拿走"性能提升幅度"</li>
+    <li><strong>Related work</strong> → <strong>跳过</strong>，等你自己做研究时再回看</li>
+    <li><strong>Discussion / Limitations</strong> → 必读！这是作者自己承认的边界</li>
   </ol>
   全程不超过 90 分钟。写 200 字三段笔记：问题 / 方法 / 跟 vLLM 哪行代码对应。
 </div>
@@ -67,152 +70,320 @@
 <h3>① PagedAttention (vLLM) · SOSP 2023 <span class="tag red">M2</span></h3>
 
 <p><strong>Kwon et al.</strong> · "Efficient Memory Management for Large Language Model Serving with PagedAttention"<br>
-<a href="https://arxiv.org/abs/2309.06180" target="_blank">arxiv.org/abs/2309.06180</a></p>
+<a href="https://arxiv.org/abs/2309.06180" target="_blank">arxiv.org/abs/2309.06180</a> · <a href="https://github.com/vllm-project/vllm" target="_blank">github.com/vllm-project/vllm</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：朴素 KV cache 内/外碎片 + 无法共享，显存利用率 ~40%。</li>
-  <li><strong>方法</strong>：固定 block + block table，OS 虚拟内存的 GPU 重写。</li>
-  <li><strong>看完读</strong>：<code>vllm/v1/core/kv_cache_manager.py</code> + <code>csrc/attention/paged_attention_v1.cu</code>。</li>
-  <li><strong>追问</strong>：block size 为什么是 16？(论文 §6.4 有讨论)</li>
+  <li><strong>问题</strong>：朴素 KV cache 给每请求预分配 max_len 连续段，内/外部碎片 + 无法共享 prefix，显存利用率 ~20-40%。</li>
+  <li><strong>方法</strong>：固定 block (16 token) + block table，OS 虚拟内存的 GPU 重写。Attention kernel 内通过 block table indirection 读取 KV。配合 prefix caching 实现 COW-like 共享。</li>
+  <li><strong>结果</strong>：throughput 提升 2-4×（相比 FasterTransformer），显存利用率 ~96%。</li>
 </ul>
+
+<h4>关键图</h4>
+<ul>
+  <li><strong>Fig 2</strong>：朴素 KV cache 利用率分布——20-40% 是论文给出的"未优化前数字"。</li>
+  <li><strong>Fig 5</strong>：block table 示意图，跟 OS 页表完全平行。</li>
+  <li><strong>Fig 18 (§6.4)</strong>：block size 消融实验，4-32 几乎一样，64+ 掉。</li>
+</ul>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li><code>vllm/v1/core/kv_cache_manager.py</code> — 总管</li>
+  <li><code>vllm/v1/core/block_pool.py</code> — free list + hash 共享</li>
+  <li><code>csrc/attention/paged_attention_v1.cu</code> — kernel 端的 indirection</li>
+</ul>
+
+<h4>追问</h4>
+<ol>
+  <li>block size 为什么是 16？(论文 §6.4，回看 <a href="03-memory.html#paged">M2 §5.3</a>)</li>
+  <li>为什么 prefill 通常不用 PagedAttention kernel？</li>
+  <li>swap-out 比 recompute 在哪些 workload 下更优？(论文 §5.4)</li>
+</ol>
 
 <h3>② Orca · OSDI 2022 <span class="tag red">M3</span></h3>
 
 <p><strong>Yu et al.</strong> · "Orca: A Distributed Serving System for Transformer-Based Generative Models"<br>
-论文官方 PDF 在 USENIX。</p>
+<a href="https://www.usenix.org/conference/osdi22/presentation/yu" target="_blank">usenix.org/conference/osdi22</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：传统 batching 等齐再跑，长短不齐时浪费严重。</li>
-  <li><strong>方法</strong>：iteration-level scheduling — 每个 token step 重组 batch。这是 continuous batching 的 OG paper。</li>
-  <li><strong>看完读</strong>：<code>vllm/v1/core/sched/scheduler.py</code> 的 <code>schedule()</code>。</li>
-  <li><strong>追问</strong>：Orca 的"selective batching"是什么？vLLM 怎么实现？</li>
+  <li><strong>问题</strong>：传统 batching 等齐再跑（request-level scheduling），长短不齐时 batch 中"短请求要等长请求结束"，浪费严重。</li>
+  <li><strong>方法</strong>：iteration-level scheduling —— 每个 token step 重新决定 batch 成员。selective batching —— 同一 batch 中不同请求的 prefill/decode 可以混跑。</li>
+  <li><strong>结果</strong>：throughput vs latency Pareto 优于静态 batching 大约 2-4×（数据集而异）。</li>
 </ul>
+
+<h4>关键图</h4>
+<ul>
+  <li><strong>Fig 1</strong>：朴素 batching vs iteration-level，能直观看出"等待时间"的差异。</li>
+  <li><strong>Fig 6</strong>：selective batching 的逻辑——同 step 内不同请求阶段不同。</li>
+</ul>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li><code>vllm/v1/core/sched/scheduler.py</code> · <code>schedule()</code> — vLLM 的 iteration-level scheduler</li>
+  <li>注意 vLLM 没用 selective batching 的全部细节（chunked prefill 是另一种思路，见 Sarathi-Serve）</li>
+</ul>
+
+<h4>追问</h4>
+<ol>
+  <li>Orca 的 selective batching 跟 Sarathi-Serve 的 chunked prefill 解的是同一个问题吗？哪个更通用？</li>
+  <li>iteration-level scheduling 的代价是什么？(每 step 都要 reschedule + 重组 batch tensor)</li>
+</ol>
 
 <h3>③ Sarathi-Serve · OSDI 2024 <span class="tag red">M3</span></h3>
 
 <p><strong>Agrawal et al.</strong> · "Taming Throughput-Latency Tradeoff in LLM Inference with Sarathi-Serve"<br>
 <a href="https://arxiv.org/abs/2403.02310" target="_blank">arxiv.org/abs/2403.02310</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：Continuous batching 里 prefill 跟 decode 混 batch 会拖慢 decode。</li>
-  <li><strong>方法</strong>：chunked prefill — 把大 prefill 切片、跟 decode 拼一起。</li>
-  <li><strong>看完读</strong>：vLLM scheduler 里 chunked_prefill 路径。</li>
-  <li><strong>追问</strong>：chunk size 跟 token budget 是什么关系？</li>
+  <li><strong>问题</strong>：Continuous batching 里 prefill 跟 decode 混 batch 时，prefill 的高 compute 让整个 batch 慢下来 —— decode 请求 TTFT/ITL 翻倍。</li>
+  <li><strong>方法</strong>：chunked prefill —— 把一个长 prompt 的 prefill 切成多个固定大小的 chunk，每个 chunk 跟若干 decode 一起跑。这样每个 step 的计算量稳定。</li>
+  <li><strong>结果</strong>：固定 ITL（inter-token latency）下 throughput 提升 2-3×。</li>
 </ul>
 
-<h3>④ SGLang (RadixAttention) · NeurIPS 2024 <span class="tag red">M2</span></h3>
+<h4>关键图</h4>
+<ul>
+  <li><strong>Fig 1</strong>：prefill 混入 decode batch 后单步 latency 暴涨的真实测量。</li>
+  <li><strong>Fig 4</strong>：chunked prefill 的调度时间线，跟 vLLM 实现完全对得上。</li>
+</ul>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li>vLLM scheduler.py 里搜 <code>chunked_prefill</code> 或 <code>num_computed_tokens</code></li>
+  <li><code>SchedulerOutput.scheduled_tokens</code> 字段</li>
+</ul>
+
+<h4>追问</h4>
+<ol>
+  <li>chunk size 怎么选？跟 token budget 是什么关系？</li>
+  <li>chunked prefill 啥时候<strong>不</strong>该开？(很短 prompt 的 workload；chunk 太多 overhead 反而升)</li>
+</ol>
+
+<h3>④ SGLang / RadixAttention · NeurIPS 2024 <span class="tag red">M2</span></h3>
 
 <p><strong>Zheng et al.</strong> · "SGLang: Efficient Execution of Structured Language Model Programs"<br>
 <a href="https://arxiv.org/abs/2312.07104" target="_blank">arxiv.org/abs/2312.07104</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：vLLM 的 prefix caching 只能命中"完整 block 前缀"，结构化场景（多分支、tree of thoughts）共享率低。</li>
-  <li><strong>方法</strong>：用 radix tree 做细粒度 KV 共享。</li>
-  <li><strong>对照</strong>：跟 vLLM prefix caching 比，何时更优？(树状结构对话、agent 多分支推理)</li>
-  <li><strong>追问</strong>：vLLM 能借鉴吗？社区有 PR 在做吗？</li>
+  <li><strong>问题</strong>：vLLM 的 prefix caching 只能命中"整块前缀"。在<strong>结构化场景</strong>（多 agent 分支、tree of thoughts、self-consistency 多采样）下，prefix 在 token 级别分叉，块级命中浪费。</li>
+  <li><strong>方法</strong>：用 <strong>radix tree</strong>（基数树）做 token 级 KV 索引。每个 prompt 的 KV 沿 tree 路径存储，分叉点自然共享，叶子节点不同则各自占用。</li>
+  <li><strong>结果</strong>：在多分支推理 workload 下，throughput 2-5× of vLLM 同期版本。</li>
 </ul>
+
+<h4>关键图</h4>
+<ul>
+  <li><strong>Fig 5</strong>：Radix tree 示意 —— prompt 的 KV 像 trie 一样组织。</li>
+  <li><strong>Fig 9</strong>：vs vLLM 在 tree-of-thoughts workload 上的吞吐对比。</li>
+</ul>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li><code>sglang/srt/mem_cache/radix_cache.py</code></li>
+  <li>跟 vLLM 的 <code>block_pool.py</code> 对照学</li>
+</ul>
+
+<h4>追问</h4>
+<ol>
+  <li>RadixAttention 对 system-prompt-only 共享场景有优势吗？(几乎没有；vLLM 的整块命中已经够)</li>
+  <li>Radix tree 的 lookup 开销是 O(树深)，会成为瓶颈吗？(实测一般不会，因为同 prefix 的请求会聚集)</li>
+  <li>vLLM 社区有人在做 RadixAttention 风格的改进吗？(搜 issue tracker)</li>
+</ol>
 
 <h3>⑤ FlashAttention (v1) · NeurIPS 2022 <span class="tag red">M4</span></h3>
 
 <p><strong>Dao et al.</strong> · "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"<br>
 <a href="https://arxiv.org/abs/2205.14135" target="_blank">arxiv.org/abs/2205.14135</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：朴素 attention 把 N×N matrix 实例化到 HBM，memory-bound 严重。</li>
-  <li><strong>方法</strong>：tile 划分 + online softmax，attention matrix 不落 HBM。</li>
-  <li><strong>看完读</strong>：FlashAttention 仓库 csrc 的 forward kernel。</li>
-  <li><strong>追问</strong>：online softmax 是怎么数学等价的？(看附录 A)</li>
-  <li><strong>后续</strong>：v2 (优化 work partition)、v3 (Hopper 架构特定优化)，选读。</li>
+  <li><strong>问题</strong>：朴素 attention 把 N×N 的 attention matrix 实例化到 HBM，对长序列（N=4K-32K）HBM 流量爆炸，attention 变成 memory-bound。</li>
+  <li><strong>方法</strong>：tile 划分 Q/K/V，在 SRAM 里增量计算 + online softmax 校正，N×N matrix 从不落 HBM。</li>
+  <li><strong>结果</strong>：长序列 attention 提速 2-4×；HBM 流量从 O(N²) 降到 O(N·d / SRAM)。</li>
 </ul>
+
+<h4>关键图</h4>
+<ul>
+  <li><strong>Fig 1</strong>：HBM 流量对比 —— 朴素 vs FlashAttention 的关键 trade-off。</li>
+  <li><strong>Fig 2</strong>：tile 划分示意。</li>
+  <li><strong>Alg 1</strong>：完整的 forward 伪代码 —— 这是面试的高频考点。</li>
+  <li><strong>Appendix A</strong>：online softmax 等价性证明 —— 不必背公式，但要知道"为什么可分块"。</li>
+</ul>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li><code>Dao-AILab/flash-attention</code> 的 csrc 是工业级 CUDA，先看 Triton 实现（如果有）</li>
+  <li>vLLM 的 Triton attention kernel：<code>vllm/v1/attention/ops/...</code></li>
+</ul>
+
+<h4>追问</h4>
+<ol>
+  <li>FlashAttention 不省 FLOPs，省什么？</li>
+  <li>v1 → v2 主要改了什么？(work partitioning，把 head 维度的归约放到 outer loop)</li>
+  <li>v3 加了什么 Hopper 特性？(TMA + WGMMA + 异步)</li>
+</ol>
 
 <h3>⑥ H2O · NeurIPS 2023 <span class="tag yellow">M2/M3 之间</span></h3>
 
 <p><strong>Zhang et al.</strong> · "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models"<br>
 <a href="https://arxiv.org/abs/2306.14048" target="_blank">arxiv.org/abs/2306.14048</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：长 context 下 KV cache 撑爆显存。</li>
-  <li><strong>方法</strong>：观察到只有少数 "heavy hitter" token 被 attention 频繁用到，其他可以 evict。</li>
-  <li><strong>OS 对照</strong>：working set theory + LRU 的现代版。</li>
-  <li><strong>追问</strong>：vLLM 当前 evict 策略是 H2O 风格吗？(答：不是，vLLM 简单 LRU。H2O 思想可能在未来 PR 出现)</li>
+  <li><strong>问题</strong>：长 context（&gt;32K）下 KV cache 撑爆显存，单序列就能吃掉一张卡。能不能丢一些 token 的 KV？</li>
+  <li><strong>方法</strong>：观察 attention score 分布 —— 只有少数 "heavy hitter" token 被频繁关注。基于历史 attention score 选 top-k 保留，其他丢弃。</li>
+  <li><strong>结果</strong>：KV cache 减少 5-10×，精度损失 &lt;1% (BLEU/ROUGE)。</li>
 </ul>
+
+<h4>OS 对照</h4>
+<p>这其实是 working set theory + LRU 的现代版。OS 上 "working set" 指进程实际用到的页面集合；H2O 上 "heavy hitter" 指 attention 实际关注的 token。eviction 决策从"最少用"变成"最低 attention score"。</p>
+
+<h4>追问</h4>
+<ol>
+  <li>vLLM 当前 evict 策略是 H2O 风格吗？(<strong>不是</strong>，vLLM 用整块 LRU。H2O 思想在 SnapKV、StreamingLLM 等论文里更接近)</li>
+  <li>"丢 KV"会损失什么？什么 workload 不能用？(需要长期记忆的任务，如代码、长文档 QA)</li>
+</ol>
 
 <h3>⑦ S-LoRA · MLSys 2024 <span class="tag yellow">M5+</span></h3>
 
 <p><strong>Sheng et al.</strong> · "S-LoRA: Serving Thousands of Concurrent LoRA Adapters"<br>
 <a href="https://arxiv.org/abs/2311.03285" target="_blank">arxiv.org/abs/2311.03285</a></p>
 
+<h4>三段摘要</h4>
 <ul>
-  <li><strong>问题</strong>：每个 user 一个 LoRA adapter（fine-tune 的小补丁），上千个怎么 serve？</li>
-  <li><strong>方法</strong>：unified memory pool + custom CUDA kernel，让多 adapter 共享 batch。</li>
-  <li><strong>OS 对照</strong>：多租户隔离 + 资源共享。</li>
-  <li><strong>看完读</strong>：<code>vllm/lora/</code>。</li>
+  <li><strong>问题</strong>：LoRA 让每个用户都能有一个 fine-tune 的小补丁（&lt;1% 参数）。但 1000 个用户 = 1000 个 adapter，怎么同时 serve？朴素切换 adapter 的开销巨大。</li>
+  <li><strong>方法</strong>：unified memory pool 存所有 adapter；custom CUDA kernel 让一个 batch 内不同请求用不同 adapter；统计上多 adapter 可以共 batch。</li>
+  <li><strong>结果</strong>：1000+ LoRA 同时 serve，throughput 比 PEFT 朴素 serving 高 30×。</li>
+</ul>
+
+<h4>OS 对照</h4>
+<p>多租户隔离 + 资源共享。OS 的 namespace / cgroup 让不同租户用同一份内核；S-LoRA 让不同 adapter 用同一份 base model。</p>
+
+<h4>看完读的代码</h4>
+<ul>
+  <li><code>vllm/lora/</code> — vLLM 的 LoRA 实现</li>
+  <li><code>punica</code> kernel — multi-LoRA 的 fused matmul kernel</li>
 </ul>
 
 <h2><span class="num">02</span>选读 3 篇 · 看兴趣选支</h2>
 
 <h3>⑧ ZeRO · SC 2020 <span class="tag green">训练向</span></h3>
 
-<p><strong>Rajbhandari et al.</strong> · "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"</p>
+<p><strong>Rajbhandari et al.</strong> · "ZeRO: Memory Optimizations Toward Training Trillion Parameter Models"<br>
+<a href="https://arxiv.org/abs/1910.02054" target="_blank">arxiv.org/abs/1910.02054</a></p>
 
 <ul>
-  <li>大模型训练的内存分片经典。</li>
-  <li>OS 思维浓——把 optimizer state、gradient、parameter 分片到多卡。</li>
-  <li><strong>推理岗</strong>面试也可能问，知道核心想法即可。</li>
+  <li>大模型训练的内存分片经典。把 optimizer state（最大头）、gradient、parameter 分别 shard 到多卡。</li>
+  <li>OS 思维浓 —— 跟"虚拟内存 + RDMA 远程内存"是同一个抽象。</li>
+  <li><strong>推理岗</strong>面试也可能问，知道 ZeRO-1/2/3 的差异即可（state / +gradient / +param 分级）。</li>
+  <li><strong>看完读</strong>：DeepSpeed 仓库 README + 一篇 ZeRO-Infinity 综述。</li>
 </ul>
 
 <h3>⑨ Megatron-LM (TP/PP) · 系列论文 <span class="tag green">训练向</span></h3>
 
 <ul>
-  <li>Tensor parallelism 把矩阵切片到多卡协同算。</li>
-  <li>Pipeline parallelism 把模型层切到多卡。</li>
-  <li>vLLM 的多卡推理也用这两套。<strong>知道概念</strong>，看 <code>vllm/distributed/</code>。</li>
+  <li><strong>Tensor parallelism (TP)</strong>：把单个矩阵切片到多卡协同算（典型：把 W_qkv 沿 head 维度切 N 份）。</li>
+  <li><strong>Pipeline parallelism (PP)</strong>：把模型层切到多卡，流水执行 batch 的不同 micro-batch。</li>
+  <li>vLLM 的多卡推理用 TP（PP 在推理里少见，主要训练）。看 <code>vllm/distributed/</code>。</li>
+  <li><strong>追问</strong>：为什么 inference 主要用 TP？(PP 的 bubble 在小 batch 下太大；TP 通信量大但 inference 数据小)</li>
 </ul>
 
 <h3>⑩ torch.compile / Inductor · ASPLOS 2024 <span class="tag blue">编译器向</span></h3>
 
-<p><strong>Ansel et al.</strong> · "PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation"</p>
+<p><strong>Ansel et al.</strong> · "PyTorch 2: Faster Machine Learning Through Dynamic Python Bytecode Transformation and Graph Compilation"<br>
+<a href="https://pytorch.org/assets/pytorch2-2.pdf" target="_blank">pytorch.org/assets/pytorch2-2.pdf</a></p>
 
 <ul>
-  <li>如果你想往编译器方向走，这是入口。</li>
-  <li>vLLM 在某些路径已经用 torch.compile。</li>
-  <li><strong>当成 Month 7+ 的桥梁论文读</strong>。</li>
+  <li>如果你想往编译器方向走，这是入口。Dynamo（前端 trace）+ Inductor（后端 codegen，生成 Triton）。</li>
+  <li>vLLM 在某些路径已经用 <code>torch.compile</code>（model forward 部分）。看 <code>vllm/compilation/</code>。</li>
+  <li><strong>当成 Month 7+ 的桥梁论文读</strong>，决定是不是要深入编译器线。</li>
 </ul>
 
 <h2><span class="num">03</span>论文笔记模板</h2>
 
-<p>每篇读完，在 <code>~/infra/papers/</code> 建一个 .md 文件，固定 3 段：</p>
+<p>每篇读完，在 <code>~/infra/papers/</code> 建一个 .md 文件，固定 4 段：</p>
 
-<pre><code># &lt;论文名&gt; · &lt;会议&gt;
+<pre><code># &lt;论文名&gt; · &lt;会议&gt; · &lt;读完日期&gt;
 
 ## 问题 (50 字)
-现状是什么；现状不好在哪。
+现状是什么；现状不好在哪。最好一个具体数字（"X% 浪费" / "Y× 慢"）。
 
 ## 方法 (100 字)
 核心 idea 一句话；最关键的 mechanism (机制) 一段。
+画一张超简单的草图（手绘扫描或 ascii art）。
 
 ## 对账 (50 字)
-跟 vLLM 哪行代码 / 哪个模块对得上？(找不到也写"找不到，待查")
+跟 vLLM 哪行代码 / 哪个模块对得上？
+找不到也写"对应模块是 X，但 vLLM 还没实现这个"。
 
-## 我学到了 (可选)
+## 我学到了 (100 字 可选)
 反直觉点、巧妙工程、可以借用到 mini-vLLM 的地方。
-</code></pre>
+对未来要不要深入这个方向的判断。</code></pre>
 
 <div class="callout check">
-  <div class="label">✓ 论文阅读量</div>
+  <div class="label">✓ 论文阅读量目标</div>
   6 个月走完，你应该有 ~15-20 篇论文笔记（7 篇必读 + 你自己 follow 的）。
   这是 senior infra 工程师的"概念资本"。<strong>面试时随手能援引 = 真的懂</strong>。
 </div>
 
-<h2><span class="num">04</span>follow 谁的 Twitter / arxiv</h2>
+<h2><span class="num">04</span>跟踪谁的 Twitter / arXiv / blog</h2>
+
+<h3>4.1 必关注的人 (vLLM/serving 圈)</h3>
+<ul>
+  <li><strong>Woosuk Kwon</strong> · vLLM 第一作者，Twitter @woosuk_k</li>
+  <li><strong>Zhuohan Li</strong> · vLLM 创始人之一，Twitter @zhuohan123</li>
+  <li><strong>Tri Dao</strong> · FlashAttention v1/v2 作者，Twitter @tri_dao</li>
+  <li><strong>Lianmin Zheng</strong> · SGLang 作者，Twitter @lm_sys</li>
+  <li><strong>Hao Zhang (UCSD)</strong> · 推理优化系列论文，Twitter @haozhangml</li>
+  <li><strong>Amey Agrawal</strong> · Sarathi 作者</li>
+</ul>
+
+<h3>4.2 必关注的 blog</h3>
+<ul>
+  <li><a href="https://blog.vllm.ai/" target="_blank">blog.vllm.ai</a> — 官方架构 + 性能文章</li>
+  <li><a href="https://lmsys.org/blog/" target="_blank">lmsys.org/blog</a> — Chatbot Arena / SGLang 团队</li>
+  <li><a href="https://horace.io/" target="_blank">horace.io</a> (Horace He) — PyTorch / kernel 深度好文</li>
+  <li><a href="https://blog.eleuther.ai/" target="_blank">blog.eleuther.ai</a> — 开源 LLM 训练实战</li>
+  <li><a href="https://www.anyscale.com/blog" target="_blank">Anyscale blog</a> — 系统层 ML（continuous batching 原始博客就在这）</li>
+</ul>
+
+<h3>4.3 arXiv 关键分类</h3>
+<ul>
+  <li><code>cs.DC</code> Distributed Computing — 分布式 serving / 训练</li>
+  <li><code>cs.LG</code> Machine Learning — 模型/算法</li>
+  <li><code>cs.PF</code> Performance — kernel / 优化</li>
+  <li><code>cs.AR</code> Architecture — 偶尔有 GPU 架构相关</li>
+</ul>
+<p>用 <a href="https://arxiv.org/list/cs.DC/recent" target="_blank">arxiv.org/list/cs.DC/recent</a> 每周扫一次标题。看到带 "LLM" / "serving" / "inference" / "KV" / "attention" 的，标个星，周末批量读。</p>
+
+<h2><span class="num">05</span>会议时间表</h2>
+
+<p>infra 论文集中在这几个会议，知道时间能预判什么时候关注什么：</p>
+
+<table>
+  <thead><tr><th>会议</th><th>关注度</th><th>截稿月</th><th>论文出炉</th></tr></thead>
+  <tbody>
+    <tr><td><strong>OSDI</strong> (USENIX OS)</td><td>顶级</td><td>5月/12月</td><td>7月/4月</td></tr>
+    <tr><td><strong>SOSP</strong> (ACM OS)</td><td>顶级，偶年</td><td>5月</td><td>10月</td></tr>
+    <tr><td><strong>NSDI</strong> (网络系统)</td><td>顶级</td><td>9月</td><td>4月</td></tr>
+    <tr><td><strong>MLSys</strong></td><td>核心</td><td>10月</td><td>5月</td></tr>
+    <tr><td><strong>ASPLOS</strong></td><td>核心 (编译器/系统/架构)</td><td>滚动</td><td>4月/10月</td></tr>
+    <tr><td><strong>NeurIPS / ICLR / ICML</strong></td><td>偶有 infra 论文 (在 system track)</td><td>各月</td><td>各月</td></tr>
+    <tr><td><strong>EuroSys</strong></td><td>欧洲 OS / 系统</td><td>10月</td><td>4月</td></tr>
+  </tbody>
+</table>
+
+<p>读 paper 的实战：OSDI / SOSP / MLSys 出新 issue 时去翻 program，标几个跟你方向相关的，加进 papers/ todo。</p>
+
+<h2><span class="num">06</span>读论文的反原则</h2>
 
 <ul>
-  <li><strong>Woosuk Kwon</strong> · vLLM 第一作者</li>
-  <li><strong>Tri Dao</strong> · FlashAttention 作者</li>
-  <li><strong>Lianmin Zheng</strong> · SGLang 作者</li>
-  <li><strong>Hao Zhang (UCSD)</strong> · 推理优化系列论文</li>
-  <li><strong>Amey Agrawal</strong> · Sarathi 作者</li>
-  <li>arXiv <code>cs.DC</code> + <code>cs.LG</code> 每周一刷</li>
+  <li>❌ 不要从第一作者最早的论文按时间读到最新。先读最有名的（被引最多 / SOTA 公认的）。</li>
+  <li>❌ 不要试图全篇看懂。一篇好 paper 你能用 5 句话讲清核心就过了。</li>
+  <li>❌ 不要光看 paper 不看代码。infra paper 的 design 和 code 经常对不上（paper 写得理想，code 长得现实）。</li>
+  <li>❌ 不要存 PDF 不写笔记。两周后你会忘 80%。写笔记是给未来的你看。</li>
+  <li>❌ 不要按 "AISys Fa2024" schedule 顺序读 24 篇。它是给学生 1 学期的，不是给你 6 个月的。</li>
 </ul>
 
 <div class="pagenav">
